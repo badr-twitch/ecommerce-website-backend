@@ -23,9 +23,11 @@ if (!admin.apps.length) {
 
 const firebaseAuth = async (req, res, next) => {
   try {
+    console.log('🔍 Firebase Auth Middleware - Request received');
     const authHeader = req.headers.authorization;
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.log('❌ Firebase Auth Middleware - No Bearer token');
       return res.status(401).json({ 
         success: false, 
         message: 'Token d\'authentification manquant' 
@@ -33,8 +35,10 @@ const firebaseAuth = async (req, res, next) => {
     }
 
     const token = authHeader.split('Bearer ')[1];
+    console.log('🔍 Firebase Auth Middleware - Token extracted, length:', token.length);
     
     // Verify Firebase token
+    console.log('🔍 Firebase Auth Middleware - Verifying token...');
     const decodedToken = await admin.auth().verifyIdToken(token);
     
     if (!decodedToken) {

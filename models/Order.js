@@ -9,7 +9,6 @@ const Order = sequelize.define('Order', {
   },
   orderNumber: {
     type: DataTypes.STRING,
-    unique: true,
     allowNull: false,
     comment: 'Human-readable order number'
   },

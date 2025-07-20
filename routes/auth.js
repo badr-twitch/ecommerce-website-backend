@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const { auth } = require('../middleware/auth');
+const firebaseAuth = require('../middleware/firebaseAuth');
 
 const router = express.Router();
 
@@ -17,7 +18,7 @@ const generateToken = (userId) => {
 };
 
 // @route   POST /api/auth/register
-// @desc    Register a new user
+// @desc    Register a new user (traditional)
 // @access  Public
 router.post('/register', [
   body('firstName').trim().isLength({ min: 2, max: 50 }).withMessage('Le prénom doit contenir entre 2 et 50 caractères'),
@@ -30,6 +31,7 @@ router.post('/register', [
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ 
+        success: false,
         error: 'Données invalides',
         details: errors.array() 
       });
@@ -41,6 +43,7 @@ router.post('/register', [
     const existingUser = await User.findOne({ where: { email } });
     if (existingUser) {
       return res.status(400).json({ 
+        success: false,
         error: 'Un compte avec cet email existe déjà' 
       });
     }
@@ -58,6 +61,7 @@ router.post('/register', [
     const token = generateToken(user.id);
 
     res.status(201).json({
+      success: true,
       message: 'Compte créé avec succès',
       token,
       user: user.toJSON()
@@ -66,13 +70,98 @@ router.post('/register', [
   } catch (error) {
     console.error('Erreur lors de l\'inscription:', error);
     res.status(500).json({ 
+      success: false,
       error: 'Erreur lors de la création du compte' 
     });
   }
 });
 
+// @route   POST /api/auth/register-firebase
+// @desc    Register a new user from Firebase
+// @access  Private (Firebase token required)
+router.post('/register-firebase', firebaseAuth, async (req, res) => {
+  try {
+    console.log('🔍 Register Firebase - Route reached');
+    console.log('🔍 Register Firebase - Request body:', req.body);
+    console.log('🔍 Register Firebase - Firebase user:', req.firebaseUser);
+    
+    const { firstName, lastName, email, emailVerified, photoURL } = req.body;
+    const firebaseUid = req.firebaseUser.uid;
+
+    // Check if user already exists
+    const existingUser = await User.findOne({ 
+      where: { firebaseUid } 
+    });
+
+    if (existingUser) {
+      console.log('🔍 Register Firebase - User already exists');
+      return res.status(200).json({
+        success: true,
+        message: 'Utilisateur déjà existant',
+        user: existingUser.toJSON()
+      });
+    }
+
+    console.log('🔍 Register Firebase - Creating new user...');
+    // Create new user
+    const user = await User.create({
+      firebaseUid,
+      firstName: firstName || req.firebaseUser.name?.split(' ')[0] || '',
+      lastName: lastName || req.firebaseUser.name?.split(' ').slice(1).join(' ') || '',
+      email,
+      emailVerified: emailVerified || false,
+      photoURL,
+      displayName: `${firstName || ''} ${lastName || ''}`.trim()
+    });
+
+    console.log('🔍 Register Firebase - User created successfully:', user.id);
+    res.status(201).json({
+      success: true,
+      message: 'Compte créé avec succès',
+      user: user.toJSON()
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur lors de l\'inscription Firebase:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Erreur lors de la création du compte' 
+    });
+  }
+});
+
+// @route   GET /api/auth/user
+// @desc    Get current user from Firebase
+// @access  Private (Firebase token required)
+router.get('/user', firebaseAuth, async (req, res) => {
+  try {
+    const user = await User.findOne({ 
+      where: { firebaseUid: req.firebaseUser.uid } 
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'Utilisateur non trouvé'
+      });
+    }
+
+    res.json({
+      success: true,
+      user: user.toJSON()
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération de l\'utilisateur:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Erreur lors de la récupération de l\'utilisateur' 
+    });
+  }
+});
+
 // @route   POST /api/auth/login
-// @desc    Login user
+// @desc    Login user (traditional)
 // @access  Public
 router.post('/login', [
   body('email').isEmail().normalizeEmail().withMessage('Email invalide'),
@@ -82,6 +171,7 @@ router.post('/login', [
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ 
+        success: false,
         error: 'Données invalides',
         details: errors.array() 
       });
@@ -93,6 +183,7 @@ router.post('/login', [
     const user = await User.findOne({ where: { email } });
     if (!user) {
       return res.status(401).json({ 
+        success: false,
         error: 'Email ou mot de passe incorrect' 
       });
     }
@@ -100,6 +191,7 @@ router.post('/login', [
     // Check if user is active
     if (!user.isActive) {
       return res.status(401).json({ 
+        success: false,
         error: 'Compte désactivé' 
       });
     }
@@ -108,6 +200,7 @@ router.post('/login', [
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
       return res.status(401).json({ 
+        success: false,
         error: 'Email ou mot de passe incorrect' 
       });
     }
@@ -119,6 +212,7 @@ router.post('/login', [
     const token = generateToken(user.id);
 
     res.json({
+      success: true,
       message: 'Connexion réussie',
       token,
       user: user.toJSON()
@@ -127,35 +221,41 @@ router.post('/login', [
   } catch (error) {
     console.error('Erreur lors de la connexion:', error);
     res.status(500).json({ 
+      success: false,
       error: 'Erreur lors de la connexion' 
     });
   }
 });
 
 // @route   GET /api/auth/me
-// @desc    Get current user
+// @desc    Get current user (traditional)
 // @access  Private
 router.get('/me', auth, async (req, res) => {
   try {
     const user = await User.findByPk(req.user.id);
     if (!user) {
       return res.status(404).json({ 
+        success: false,
         error: 'Utilisateur non trouvé' 
       });
     }
 
-    res.json({ user: user.toJSON() });
+    res.json({ 
+      success: true,
+      user: user.toJSON() 
+    });
 
   } catch (error) {
     console.error('Erreur lors de la récupération du profil:', error);
     res.status(500).json({ 
+      success: false,
       error: 'Erreur lors de la récupération du profil' 
     });
   }
 });
 
 // @route   PUT /api/auth/profile
-// @desc    Update user profile
+// @desc    Update user profile (traditional)
 // @access  Private
 router.put('/profile', auth, [
   body('firstName').optional().trim().isLength({ min: 2, max: 50 }),
@@ -169,6 +269,7 @@ router.put('/profile', auth, [
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ 
+        success: false,
         error: 'Données invalides',
         details: errors.array() 
       });
@@ -177,6 +278,7 @@ router.put('/profile', auth, [
     const user = await User.findByPk(req.user.id);
     if (!user) {
       return res.status(404).json({ 
+        success: false,
         error: 'Utilisateur non trouvé' 
       });
     }
@@ -185,6 +287,7 @@ router.put('/profile', auth, [
     await user.update(req.body);
 
     res.json({
+      success: true,
       message: 'Profil mis à jour avec succès',
       user: user.toJSON()
     });
@@ -192,6 +295,7 @@ router.put('/profile', auth, [
   } catch (error) {
     console.error('Erreur lors de la mise à jour du profil:', error);
     res.status(500).json({ 
+      success: false,
       error: 'Erreur lors de la mise à jour du profil' 
     });
   }
@@ -208,24 +312,27 @@ router.post('/change-password', auth, [
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ 
+        success: false,
         error: 'Données invalides',
         details: errors.array() 
       });
     }
 
     const { currentPassword, newPassword } = req.body;
-
     const user = await User.findByPk(req.user.id);
+
     if (!user) {
       return res.status(404).json({ 
+        success: false,
         error: 'Utilisateur non trouvé' 
       });
     }
 
     // Verify current password
-    const isCurrentPasswordValid = await user.comparePassword(currentPassword);
-    if (!isCurrentPasswordValid) {
-      return res.status(400).json({ 
+    const isPasswordValid = await user.comparePassword(currentPassword);
+    if (!isPasswordValid) {
+      return res.status(401).json({ 
+        success: false,
         error: 'Mot de passe actuel incorrect' 
       });
     }
@@ -234,12 +341,14 @@ router.post('/change-password', auth, [
     await user.update({ password: newPassword });
 
     res.json({
+      success: true,
       message: 'Mot de passe modifié avec succès'
     });
 
   } catch (error) {
     console.error('Erreur lors du changement de mot de passe:', error);
     res.status(500).json({ 
+      success: false,
       error: 'Erreur lors du changement de mot de passe' 
     });
   }
@@ -255,40 +364,47 @@ router.post('/forgot-password', [
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ 
+        success: false,
         error: 'Données invalides',
         details: errors.array() 
       });
     }
 
     const { email } = req.body;
-
     const user = await User.findOne({ where: { email } });
+
     if (!user) {
-      // Don't reveal if user exists or not
-      return res.json({
-        message: 'Si un compte avec cet email existe, un email de réinitialisation a été envoyé'
+      return res.status(404).json({ 
+        success: false,
+        error: 'Aucun compte trouvé avec cette adresse email' 
       });
     }
 
     // Generate reset token
-    const resetToken = require('crypto').randomBytes(32).toString('hex');
-    const resetExpires = new Date(Date.now() + 3600000); // 1 hour
+    const resetToken = jwt.sign(
+      { userId: user.id },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: '1h' }
+    );
 
+    // Save reset token to user
     await user.update({
       passwordResetToken: resetToken,
-      passwordResetExpires: resetExpires
+      passwordResetExpires: new Date(Date.now() + 3600000) // 1 hour
     });
 
     // TODO: Send email with reset link
     // For now, just return success
     res.json({
-      message: 'Si un compte avec cet email existe, un email de réinitialisation a été envoyé'
+      success: true,
+      message: 'Email de réinitialisation envoyé'
     });
 
   } catch (error) {
-    console.error('Erreur lors de la demande de réinitialisation:', error);
+    console.error('Erreur lors de l\'envoi de l\'email de réinitialisation:', error);
     res.status(500).json({ 
-      error: 'Erreur lors de la demande de réinitialisation' 
+      success: false,
+      error: 'Erreur lors de l\'envoi de l\'email de réinitialisation' 
     });
   }
 });
@@ -304,6 +420,7 @@ router.post('/reset-password', [
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ 
+        success: false,
         error: 'Données invalides',
         details: errors.array() 
       });
@@ -311,8 +428,12 @@ router.post('/reset-password', [
 
     const { token, newPassword } = req.body;
 
+    // Verify token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    
     const user = await User.findOne({
       where: {
+        id: decoded.userId,
         passwordResetToken: token,
         passwordResetExpires: { [require('sequelize').Op.gt]: new Date() }
       }
@@ -320,6 +441,7 @@ router.post('/reset-password', [
 
     if (!user) {
       return res.status(400).json({ 
+        success: false,
         error: 'Token invalide ou expiré' 
       });
     }
@@ -332,12 +454,14 @@ router.post('/reset-password', [
     });
 
     res.json({
+      success: true,
       message: 'Mot de passe réinitialisé avec succès'
     });
 
   } catch (error) {
     console.error('Erreur lors de la réinitialisation du mot de passe:', error);
     res.status(500).json({ 
+      success: false,
       error: 'Erreur lors de la réinitialisation du mot de passe' 
     });
   }

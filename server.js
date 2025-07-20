@@ -6,6 +6,44 @@ const path = require('path');
 // Load environment variables
 dotenv.config();
 
+// Debug environment variables
+console.log('🔍 Environment check:');
+console.log('- FIREBASE_SERVICE_ACCOUNT exists:', !!process.env.FIREBASE_SERVICE_ACCOUNT);
+console.log('- FIREBASE_DATABASE_URL exists:', !!process.env.FIREBASE_DATABASE_URL);
+
+// Initialize Firebase Admin SDK
+const admin = require('firebase-admin');
+
+// Parse Firebase service account
+let serviceAccount;
+try {
+  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  console.log('✅ Firebase service account loaded successfully');
+} catch (error) {
+  console.error('❌ Error parsing Firebase service account:', error);
+  console.error('❌ FIREBASE_SERVICE_ACCOUNT value:', process.env.FIREBASE_SERVICE_ACCOUNT ? 'EXISTS' : 'MISSING');
+  serviceAccount = null;
+}
+
+// Initialize Firebase Admin SDK
+if (!admin.apps.length) {
+  try {
+    if (!serviceAccount) {
+      throw new Error('Firebase service account not available');
+    }
+    
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+      databaseURL: process.env.FIREBASE_DATABASE_URL
+    });
+    console.log('✅ Firebase Admin SDK initialized successfully');
+  } catch (error) {
+    console.error('❌ Error initializing Firebase Admin:', error);
+  }
+} else {
+  console.log('✅ Firebase Admin SDK already initialized');
+}
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -20,10 +58,19 @@ app.use(express.urlencoded({ extended: true }));
 // Database configuration
 const sequelize = require('./config/database');
 
-// Test database connection
+// Import models
+const User = require('./models/User');
+
+// Test database connection and sync models
 sequelize.authenticate()
   .then(() => {
     console.log('✅ Connexion à la base de données PostgreSQL établie avec succès.');
+    
+    // Sync all models with database
+    return sequelize.sync({ force: false });
+  })
+  .then(() => {
+    console.log('✅ Modèles de base de données synchronisés avec succès.');
   })
   .catch(err => {
     console.error('❌ Erreur de connexion à la base de données:', err);
