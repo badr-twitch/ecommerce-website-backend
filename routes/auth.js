@@ -1,10 +1,9 @@
 const express = require('express');
+const { body, validationResult } = require('express-validator');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { body, validationResult } = require('express-validator');
-const User = require('../models/User');
-const { auth } = require('../middleware/auth');
 const firebaseAuth = require('../middleware/firebaseAuth');
+const User = require('../models/User');
 
 const router = express.Router();
 
@@ -83,6 +82,8 @@ router.post('/register-firebase', firebaseAuth, async (req, res) => {
   try {
     console.log('🔍 Register Firebase - Route reached');
     console.log('🔍 Register Firebase - Request body:', req.body);
+    console.log('🔍 Register Firebase - Request headers:', req.headers);
+    console.log('🔍 Register Firebase - Content-Type:', req.headers['content-type']);
     console.log('🔍 Register Firebase - Firebase user:', req.firebaseUser);
     
     const { firstName, lastName, email, emailVerified, photoURL } = req.body;
@@ -135,24 +136,29 @@ router.post('/register-firebase', firebaseAuth, async (req, res) => {
 // @access  Private (Firebase token required)
 router.get('/user', firebaseAuth, async (req, res) => {
   try {
+    console.log('🔍 Get User - Route reached');
+    console.log('🔍 Get User - Firebase UID:', req.firebaseUser.uid);
+    
     const user = await User.findOne({ 
       where: { firebaseUid: req.firebaseUser.uid } 
     });
 
     if (!user) {
+      console.log('🔍 Get User - User not found in database');
       return res.status(404).json({
         success: false,
-        message: 'Utilisateur non trouvé'
+        message: 'Utilisateur non trouvé dans la base de données'
       });
     }
 
+    console.log('🔍 Get User - User found:', user.id);
     res.json({
       success: true,
       user: user.toJSON()
     });
 
   } catch (error) {
-    console.error('Erreur lors de la récupération de l\'utilisateur:', error);
+    console.error('❌ Erreur lors de la récupération de l\'utilisateur:', error);
     res.status(500).json({ 
       success: false,
       error: 'Erreur lors de la récupération de l\'utilisateur' 
@@ -230,9 +236,9 @@ router.post('/login', [
 // @route   GET /api/auth/me
 // @desc    Get current user (traditional)
 // @access  Private
-router.get('/me', auth, async (req, res) => {
+router.get('/me', firebaseAuth, async (req, res) => {
   try {
-    const user = await User.findByPk(req.user.id);
+    const user = await User.findByPk(req.firebaseUser.uid);
     if (!user) {
       return res.status(404).json({ 
         success: false,
@@ -255,9 +261,16 @@ router.get('/me', auth, async (req, res) => {
 });
 
 // @route   PUT /api/auth/profile
-// @desc    Update user profile (traditional)
+// @desc    Update user profile (Firebase)
 // @access  Private
-router.put('/profile', auth, [
+router.put('/profile', firebaseAuth, [
+  body('displayName').optional().trim().custom((value) => {
+    if (value !== undefined && value !== null && value !== '' && value.length < 2) {
+      throw new Error('Le nom d\'affichage doit contenir au moins 2 caractères');
+    }
+    return true;
+  }),
+  body('photoURL').optional().trim(),
   body('firstName').optional().trim().isLength({ min: 2, max: 50 }),
   body('lastName').optional().trim().isLength({ min: 2, max: 50 }),
   body('phone').optional().isMobilePhone('fr-FR'),
@@ -268,6 +281,8 @@ router.put('/profile', auth, [
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('❌ Profile Update - Validation errors:', errors.array());
+      console.log('❌ Profile Update - Request body:', req.body);
       return res.status(400).json({ 
         success: false,
         error: 'Données invalides',
@@ -275,7 +290,11 @@ router.put('/profile', auth, [
       });
     }
 
-    const user = await User.findByPk(req.user.id);
+    // Find user by Firebase UID
+    const user = await User.findOne({ 
+      where: { firebaseUid: req.firebaseUser.uid } 
+    });
+
     if (!user) {
       return res.status(404).json({ 
         success: false,
@@ -302,49 +321,15 @@ router.put('/profile', auth, [
 });
 
 // @route   POST /api/auth/change-password
-// @desc    Change user password
+// @desc    Change user password (Firebase handles this)
 // @access  Private
-router.post('/change-password', auth, [
-  body('currentPassword').notEmpty().withMessage('Mot de passe actuel requis'),
-  body('newPassword').isLength({ min: 6 }).withMessage('Le nouveau mot de passe doit contenir au moins 6 caractères')
-], async (req, res) => {
+router.post('/change-password', firebaseAuth, async (req, res) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Données invalides',
-        details: errors.array() 
-      });
-    }
-
-    const { currentPassword, newPassword } = req.body;
-    const user = await User.findByPk(req.user.id);
-
-    if (!user) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Utilisateur non trouvé' 
-      });
-    }
-
-    // Verify current password
-    const isPasswordValid = await user.comparePassword(currentPassword);
-    if (!isPasswordValid) {
-      return res.status(401).json({ 
-        success: false,
-        error: 'Mot de passe actuel incorrect' 
-      });
-    }
-
-    // Update password
-    await user.update({ password: newPassword });
-
     res.json({
       success: true,
-      message: 'Mot de passe modifié avec succès'
+      message: 'Changement de mot de passe géré par Firebase',
+      note: 'Utilisez l\'interface Firebase pour changer votre mot de passe'
     });
-
   } catch (error) {
     console.error('Erreur lors du changement de mot de passe:', error);
     res.status(500).json({ 
@@ -463,6 +448,29 @@ router.post('/reset-password', [
     res.status(500).json({ 
       success: false,
       error: 'Erreur lors de la réinitialisation du mot de passe' 
+    });
+  }
+});
+
+// @route   GET /api/auth/debug/users
+// @desc    Get all users (debug endpoint)
+// @access  Private
+router.get('/debug/users', async (req, res) => {
+  try {
+    const users = await User.findAll({
+      attributes: ['id', 'firstName', 'lastName', 'email', 'firebaseUid', 'createdAt']
+    });
+    
+    res.json({
+      success: true,
+      count: users.length,
+      users: users.map(user => user.toJSON())
+    });
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Erreur lors de la récupération des utilisateurs' 
     });
   }
 });

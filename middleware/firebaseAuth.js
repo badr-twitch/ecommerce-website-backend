@@ -48,21 +48,18 @@ const firebaseAuth = async (req, res, next) => {
       });
     }
 
-    // Get user from database
+    // Add Firebase user to request object
+    req.firebaseUser = decodedToken;
+    
+    // Try to get user from database (optional for registration)
     const user = await User.findOne({ 
       where: { firebaseUid: decodedToken.uid } 
     });
 
-    if (!user) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Utilisateur non trouvé dans la base de données' 
-      });
+    // Add user to request object if found
+    if (user) {
+      req.user = user;
     }
-
-    // Add user to request object
-    req.user = user;
-    req.firebaseUser = decodedToken;
     
     next();
   } catch (error) {
