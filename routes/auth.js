@@ -475,4 +475,149 @@ router.get('/debug/users', async (req, res) => {
   }
 });
 
+// @route   DELETE /api/auth/delete-account
+// @desc    Delete user account and all related data
+// @access  Private (Firebase token required)
+router.delete('/delete-account', firebaseAuth, async (req, res) => {
+  try {
+    console.log('🔍 Delete Account - Route reached');
+    console.log('🔍 Delete Account - Firebase user:', req.firebaseUser);
+    
+    const firebaseUid = req.firebaseUser.uid;
+
+    // Find user in database
+    const user = await User.findOne({ 
+      where: { firebaseUid } 
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    // Import related models for cleanup
+    const PaymentMethod = require('../models/PaymentMethod');
+    const ShippingAddress = require('../models/ShippingAddress');
+    const Order = require('../models/Order');
+    const OrderItem = require('../models/OrderItem');
+
+    // Start transaction for data consistency
+    const transaction = await require('../config/database').transaction();
+
+    try {
+      // Delete related data in order (respecting foreign key constraints)
+      
+      // 1. Delete order items first
+      await OrderItem.destroy({
+        where: { orderId: { [require('sequelize').Op.in]: 
+          await Order.findAll({ 
+            where: { userId: user.id },
+            attributes: ['id'],
+            transaction 
+          }).then(orders => orders.map(o => o.id))
+        }},
+        transaction
+      });
+
+      // 2. Delete orders
+      await Order.destroy({
+        where: { userId: user.id },
+        transaction
+      });
+
+      // 3. Delete payment methods
+      await PaymentMethod.destroy({
+        where: { userId: user.id },
+        transaction
+      });
+
+      // 4. Delete shipping addresses
+      await ShippingAddress.destroy({
+        where: { userId: user.id },
+        transaction
+      });
+
+      // 5. Finally delete the user
+      await user.destroy({ transaction });
+
+      // Commit transaction
+      await transaction.commit();
+
+      console.log('✅ User account and all related data deleted successfully');
+
+      res.json({
+        success: true,
+        message: 'Compte et toutes les données associées supprimés avec succès'
+      });
+
+    } catch (error) {
+      // Rollback transaction on error
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('❌ Error deleting user account:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la suppression du compte'
+    });
+  }
+});
+
+// @route   POST /api/auth/export-data
+// @desc    Export user data before deletion
+// @access  Private (Firebase token required)
+router.post('/export-data', firebaseAuth, async (req, res) => {
+  try {
+    console.log('🔍 Export Data - Route reached');
+    
+    const firebaseUid = req.firebaseUser.uid;
+
+    // Find user in database
+    const user = await User.findOne({ 
+      where: { firebaseUid } 
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    // Import related models
+    const PaymentMethod = require('../models/PaymentMethod');
+    const ShippingAddress = require('../models/ShippingAddress');
+    const Order = require('../models/Order');
+    const OrderItem = require('../models/OrderItem');
+
+    // Gather all user data
+    const userData = {
+      profile: user.toJSON(),
+      paymentMethods: await PaymentMethod.findAll({ where: { userId: user.id } }),
+      shippingAddresses: await ShippingAddress.findAll({ where: { userId: user.id } }),
+      orders: await Order.findAll({ 
+        where: { userId: user.id },
+        include: [{ model: OrderItem }]
+      })
+    };
+
+    res.json({
+      success: true,
+      message: 'Données exportées avec succès',
+      data: userData
+    });
+
+  } catch (error) {
+    console.error('❌ Error exporting user data:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de l\'exportation des données'
+    });
+  }
+});
+
 module.exports = router; 
