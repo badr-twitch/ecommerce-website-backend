@@ -13,21 +13,13 @@ router.get('/', async (req, res) => {
   try {
     const categories = await Category.findAll({
       where: { isActive: true },
-      include: [
-        {
-          model: Category,
-          as: 'children',
-          where: { isActive: true },
-          required: false
-        }
-      ],
       order: [
         ['sortOrder', 'ASC'],
         ['name', 'ASC']
       ]
     });
 
-    res.json({ categories });
+    res.json(categories);
 
   } catch (error) {
     console.error('Erreur lors de la récupération des catégories:', error);

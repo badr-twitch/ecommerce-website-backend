@@ -66,6 +66,13 @@ const sequelize = require('./config/database');
 
 // Import models
 const User = require('./models/User');
+const Product = require('./models/Product');
+const Category = require('./models/Category');
+const Order = require('./models/Order');
+const OrderItem = require('./models/OrderItem');
+const Cart = require('./models/Cart');
+const CartItem = require('./models/CartItem');
+const Review = require('./models/Review');
 const PaymentMethod = require('./models/PaymentMethod');
 const ShippingAddress = require('./models/ShippingAddress');
 
@@ -73,6 +80,44 @@ const ShippingAddress = require('./models/ShippingAddress');
 sequelize.authenticate()
   .then(() => {
     console.log('✅ Connexion à la base de données PostgreSQL établie avec succès.');
+    
+    // Define associations
+    User.hasMany(Order, { foreignKey: 'userId', as: 'orders' });
+    Order.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+    User.hasMany(Review, { foreignKey: 'userId', as: 'reviews' });
+    Review.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+    User.hasOne(Cart, { foreignKey: 'userId', as: 'cart' });
+    Cart.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+    Category.hasMany(Product, { foreignKey: 'categoryId', as: 'products' });
+    Product.belongsTo(Category, { foreignKey: 'categoryId', as: 'category' });
+
+    Product.hasMany(Review, { foreignKey: 'productId', as: 'reviews' });
+    Review.belongsTo(Product, { foreignKey: 'productId', as: 'product' });
+
+    Product.hasMany(CartItem, { foreignKey: 'productId', as: 'cartItems' });
+    CartItem.belongsTo(Product, { foreignKey: 'productId', as: 'product' });
+
+    Cart.hasMany(CartItem, { foreignKey: 'cartId', as: 'cartItems' });
+    CartItem.belongsTo(Cart, { foreignKey: 'cartId', as: 'cart' });
+
+    Order.hasMany(OrderItem, { foreignKey: 'orderId', as: 'orderItems' });
+    OrderItem.belongsTo(Order, { foreignKey: 'orderId', as: 'order' });
+
+    Product.hasMany(OrderItem, { foreignKey: 'productId', as: 'orderItems' });
+    OrderItem.belongsTo(Product, { foreignKey: 'productId', as: 'product' });
+
+    // Self-referential association for categories
+    Category.hasMany(Category, { 
+      as: 'children', 
+      foreignKey: 'parentId' 
+    });
+    Category.belongsTo(Category, { 
+      as: 'parent', 
+      foreignKey: 'parentId' 
+    });
     
     // Sync all models with database
     return sequelize.sync({ force: false }); // Back to normal sync

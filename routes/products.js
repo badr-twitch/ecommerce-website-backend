@@ -1,5 +1,6 @@
 const express = require('express');
 const { body, validationResult, query } = require('express-validator');
+const { Op } = require('sequelize');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const Review = require('../models/Review');
@@ -50,26 +51,28 @@ router.get('/', [
       isActive: true
     };
 
+    // Debug logging
+    console.log('🔍 Products API - Query parameters:', req.query);
+
     if (category) {
       whereClause.categoryId = category;
     }
 
     if (search) {
-      whereClause[require('sequelize').Op.or] = [
-        { name: { [require('sequelize').Op.iLike]: `%${search}%` } },
-        { description: { [require('sequelize').Op.iLike]: `%${search}%` } },
-        { tags: { [require('sequelize').Op.contains]: [search] } }
+      whereClause[Op.or] = [
+        { name: { [Op.iLike]: `%${search}%` } },
+        { description: { [Op.iLike]: `%${search}%` } }
       ];
     }
 
     if (minPrice !== undefined) {
-      whereClause.price = { [require('sequelize').Op.gte]: minPrice };
+      whereClause.price = { [Op.gte]: minPrice };
     }
 
     if (maxPrice !== undefined) {
       whereClause.price = {
         ...whereClause.price,
-        [require('sequelize').Op.lte]: maxPrice
+        [Op.lte]: maxPrice
       };
     }
 
@@ -81,10 +84,13 @@ router.get('/', [
       whereClause.isOnSale = onSale;
     }
 
+    // Debug logging
+    console.log('🔍 Products API - Final where clause:', whereClause);
+
     // Calculate offset
     const offset = (page - 1) * limit;
 
-    // Get products with category and reviews
+    // Get products with category
     const { count, rows: products } = await Product.findAndCountAll({
       where: whereClause,
       include: [
@@ -92,19 +98,6 @@ router.get('/', [
           model: Category,
           as: 'category',
           attributes: ['id', 'name', 'slug']
-        },
-        {
-          model: Review,
-          as: 'reviews',
-          where: { isApproved: true },
-          required: false,
-          include: [
-            {
-              model: User,
-              as: 'user',
-              attributes: ['firstName', 'lastName']
-            }
-          ]
         }
       ],
       order: [[sort, order]],
@@ -113,20 +106,11 @@ router.get('/', [
       distinct: true
     });
 
-    // Calculate average rating for each product
+    // Add default rating values for now
     const productsWithRating = products.map(product => {
       const productData = product.toJSON();
-      const reviews = productData.reviews || [];
-      
-      if (reviews.length > 0) {
-        const totalRating = reviews.reduce((sum, review) => sum + review.rating, 0);
-        productData.averageRating = (totalRating / reviews.length).toFixed(1);
-        productData.reviewCount = reviews.length;
-      } else {
-        productData.averageRating = 0;
-        productData.reviewCount = 0;
-      }
-
+      productData.averageRating = 0;
+      productData.reviewCount = 0;
       return productData;
     });
 
@@ -142,8 +126,11 @@ router.get('/', [
 
   } catch (error) {
     console.error('Erreur lors de la récupération des produits:', error);
+    console.error('Error details:', error.message);
+    console.error('Error stack:', error.stack);
     res.status(500).json({ 
-      error: 'Erreur lors de la récupération des produits' 
+      error: 'Erreur lors de la récupération des produits',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
