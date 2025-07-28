@@ -37,6 +37,15 @@ if (!admin.apps.length) {
       databaseURL: process.env.FIREBASE_DATABASE_URL
     });
     console.log('✅ Firebase Admin SDK initialized successfully');
+    
+    // Test Firebase Admin functionality
+    try {
+      admin.auth().getUserByEmail('test@example.com')
+        .then(() => console.log('✅ Firebase Admin SDK is working correctly'))
+        .catch(() => console.log('⚠️ Firebase Admin SDK initialized but test failed'));
+    } catch (testError) {
+      console.log('⚠️ Firebase Admin SDK initialized but test failed:', testError.message);
+    }
   } catch (error) {
     console.error('❌ Error initializing Firebase Admin:', error);
   }
@@ -75,6 +84,7 @@ const CartItem = require('./models/CartItem');
 const Review = require('./models/Review');
 const PaymentMethod = require('./models/PaymentMethod');
 const ShippingAddress = require('./models/ShippingAddress');
+const VerificationCode = require('./models/VerificationCode');
 
 // Test database connection and sync models
 sequelize.authenticate()
@@ -137,6 +147,7 @@ const userRoutes = require('./routes/users');
 const categoryRoutes = require('./routes/categories');
 const paymentMethodRoutes = require('./routes/paymentMethods');
 const shippingAddressRoutes = require('./routes/shippingAddresses');
+const adminRoutes = require('./routes/admin');
 
 // API Routes
 app.use('/api/auth', authRoutes);
@@ -146,6 +157,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/payment-methods', paymentMethodRoutes);
 app.use('/api/shipping-addresses', shippingAddressRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

@@ -4,6 +4,9 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const User = require('../models/User');
+const VerificationCode = require('../models/VerificationCode');
+const smsService = require('../services/smsService');
+const admin = require('firebase-admin');
 
 const router = express.Router();
 
@@ -302,8 +305,53 @@ router.put('/profile', firebaseAuth, [
       });
     }
 
-    // Update user
-    await user.update(req.body);
+    // Prepare update data
+    const updateData = { ...req.body };
+
+    // Handle phone number updates
+    if (req.body.phone) {
+      // If user doesn't have a phone number yet, allow first-time addition
+      if (!user.phone) {
+        console.log('📱 First-time phone number addition:', req.body.phone);
+        updateData.phone = req.body.phone;
+        
+        // Update Firebase custom claims for first-time phone addition
+        try {
+          console.log('🔄 Attempting to update Firebase custom claims for UID:', req.firebaseUser.uid);
+          console.log('📱 Phone number to set in Firebase:', req.body.phone);
+          
+          await admin.auth().setCustomUserClaims(req.firebaseUser.uid, {
+            phone: req.body.phone
+          });
+          
+          console.log('✅ Firebase custom claims updated with first-time phone number');
+          
+          // Verify the custom claims were set
+          const userRecord = await admin.auth().getUser(req.firebaseUser.uid);
+          console.log('🔍 User custom claims after update:', userRecord.customClaims);
+          
+        } catch (firebaseError) {
+          console.error('❌ Error updating Firebase custom claims:', firebaseError);
+          console.error('❌ Error details:', {
+            code: firebaseError.code,
+            message: firebaseError.message,
+            stack: firebaseError.stack
+          });
+        }
+      } else if (req.body.phone !== user.phone) {
+        // If user already has a phone number and is trying to change it
+        return res.status(400).json({
+          success: false,
+          error: 'Le changement de numéro de téléphone nécessite une vérification par email. Utilisez l\'option "Changer le numéro de téléphone" dans votre profil.'
+        });
+      }
+    }
+
+    // Update user in database
+    await user.update(updateData);
+
+    // Note: Phone number changes are now handled through separate verification routes
+    // Firebase custom claims for phone are updated in the verification process
 
     res.json({
       success: true,
@@ -335,6 +383,385 @@ router.post('/change-password', firebaseAuth, async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: 'Erreur lors du changement de mot de passe' 
+    });
+  }
+});
+
+// @route   GET /api/auth/test-custom-claims
+// @desc    Test Firebase custom claims functionality
+// @access  Private
+router.get('/test-custom-claims', firebaseAuth, async (req, res) => {
+  try {
+    console.log('🧪 Testing custom claims for user:', req.firebaseUser.uid);
+    
+    // Check if Firebase Admin is properly initialized
+    if (!admin.apps.length) {
+      throw new Error('Firebase Admin SDK not initialized');
+    }
+    
+    // Get current custom claims
+    const userRecord = await admin.auth().getUser(req.firebaseUser.uid);
+    console.log('🔍 Current custom claims:', userRecord.customClaims);
+    
+    // Set a test custom claim
+    await admin.auth().setCustomUserClaims(req.firebaseUser.uid, {
+      ...userRecord.customClaims,
+      testClaim: 'test-value-' + Date.now()
+    });
+    
+    // Get updated custom claims
+    const updatedUserRecord = await admin.auth().getUser(req.firebaseUser.uid);
+    console.log('🔍 Updated custom claims:', updatedUserRecord.customClaims);
+    
+    res.json({
+      success: true,
+      message: 'Custom claims test completed',
+      originalClaims: userRecord.customClaims,
+      updatedClaims: updatedUserRecord.customClaims,
+      firebaseAdminInitialized: admin.apps.length > 0
+    });
+    
+  } catch (error) {
+    console.error('❌ Error testing custom claims:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Error testing custom claims: ' + error.message,
+      firebaseAdminInitialized: admin.apps.length > 0
+    });
+  }
+});
+
+// @route   POST /api/auth/send-phone-verification
+// @desc    Send verification SMS for current phone number (required before any changes)
+// @access  Private
+router.post('/send-phone-verification', firebaseAuth, async (req, res) => {
+  try {
+    const firebaseUid = req.firebaseUser.uid;
+
+    // Get user from database
+    const user = await User.findOne({ where: { firebaseUid } });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    // Check if user has a phone number
+    if (!user.phone) {
+      return res.status(400).json({
+        success: false,
+        error: 'Vous devez d\'abord ajouter un numéro de téléphone'
+      });
+    }
+
+    // Generate 6-digit verification code
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    // Set expiration time (10 minutes from now)
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    // For debugging - show verification code in console
+    console.log('🔐 Generated verification code:', verificationCode);
+    console.log('⏰ Code expires at:', expiresAt);
+
+    // Save verification code to database (no newPhoneNumber yet)
+    await VerificationCode.create({
+      userId: user.id,
+      email: user.email,
+      code: verificationCode,
+      type: 'phone_verification',
+      expiresAt: expiresAt,
+      newPhoneNumber: null
+    });
+
+    // Send verification SMS for current phone number
+    console.log('📱 Attempting to send verification SMS to:', user.phone);
+    console.log('📱 User details:', {
+      email: user.email,
+      name: user.displayName || user.firstName,
+      phone: user.phone
+    });
+    
+    const smsResult = await smsService.sendVerificationSMS(
+      user.phone,
+      verificationCode
+    );
+
+    console.log('📱 Current phone verification SMS result:', smsResult);
+
+    res.json({
+      success: true,
+      message: 'SMS de vérification envoyé avec succès',
+      expiresIn: '10 minutes'
+    });
+
+  } catch (error) {
+    console.error('❌ Error sending phone verification SMS:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de l\'envoi du SMS de vérification'
+    });
+  }
+});
+
+// @route   POST /api/auth/verify-current-phone
+// @desc    Verify current phone number with code (required before any changes)
+// @access  Private
+router.post('/verify-current-phone', firebaseAuth, [
+  body('verificationCode').isLength({ min: 6, max: 6 }).withMessage('Code de vérification invalide')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Code de vérification invalide',
+        details: errors.array() 
+      });
+    }
+
+    const { verificationCode } = req.body;
+    const firebaseUid = req.firebaseUser.uid;
+
+    // Get user from database
+    const user = await User.findOne({ where: { firebaseUid } });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    // Find valid verification code
+    const { Op } = require('sequelize');
+    const codeRecord = await VerificationCode.findOne({
+      where: {
+        userId: user.id,
+        code: verificationCode,
+        type: 'phone_verification',
+        used: false,
+        expiresAt: {
+          [Op.gt]: new Date()
+        }
+      }
+    });
+
+    if (!codeRecord) {
+      return res.status(400).json({
+        success: false,
+        error: 'Code de vérification invalide ou expiré'
+      });
+    }
+
+    // Mark code as used
+    await codeRecord.update({ used: true });
+
+    // Delete all verification codes for this user
+    await VerificationCode.destroy({
+      where: {
+        userId: user.id,
+        type: 'phone_verification'
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Numéro de téléphone actuel vérifié avec succès',
+      verified: true
+    });
+
+  } catch (error) {
+    console.error('❌ Error verifying current phone:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la vérification du numéro actuel'
+    });
+  }
+});
+
+// @route   POST /api/auth/set-new-phone
+// @desc    Set new phone number (requires previous verification)
+// @access  Private
+router.post('/set-new-phone', firebaseAuth, [
+  body('newPhoneNumber').custom((value) => {
+    // Accept international phone numbers
+    if (!value || value.length < 10) {
+      throw new Error('Le numéro de téléphone doit contenir au moins 10 chiffres');
+    }
+    // Basic validation for international format
+    const phoneRegex = /^\+[1-9]\d{1,14}$/;
+    if (!phoneRegex.test(value)) {
+      throw new Error('Le numéro de téléphone doit être au format international (ex: +33678398091)');
+    }
+    return true;
+  })
+], async (req, res) => {
+  try {
+    console.log('🔍 Set new phone request received');
+    console.log('🔍 Request body:', req.body);
+    console.log('🔍 Firebase user:', req.firebaseUser?.uid);
+    
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.log('❌ Validation errors:', errors.array());
+      return res.status(400).json({ 
+        success: false,
+        error: 'Numéro de téléphone invalide',
+        details: errors.array() 
+      });
+    }
+
+    const { newPhoneNumber } = req.body;
+    const firebaseUid = req.firebaseUser.uid;
+
+    // Get user from database
+    const user = await User.findOne({ where: { firebaseUid } });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    // Check if user has a phone number
+    if (!user.phone) {
+      return res.status(400).json({
+        success: false,
+        error: 'Vous devez d\'abord ajouter un numéro de téléphone'
+      });
+    }
+
+    // Check if the new phone number is different from the current one
+    console.log('🔍 Comparing phone numbers:');
+    console.log('🔍 Current phone:', user.phone);
+    console.log('🔍 New phone:', newPhoneNumber);
+    console.log('🔍 Are they equal?', user.phone === newPhoneNumber);
+    
+    if (user.phone === newPhoneNumber) {
+      return res.status(400).json({
+        success: false,
+        error: 'Le nouveau numéro de téléphone doit être différent de l\'actuel'
+      });
+    }
+
+    // Update user's phone number
+    await user.update({ phone: newPhoneNumber });
+
+    // Update Firebase custom claims
+    try {
+      console.log('🔄 Attempting to update Firebase custom claims for UID:', firebaseUid);
+      console.log('📱 Phone number to set in Firebase:', newPhoneNumber);
+      
+      // Check if Firebase Admin is properly initialized
+      if (!admin.apps.length) {
+        throw new Error('Firebase Admin SDK not initialized');
+      }
+      
+      await admin.auth().setCustomUserClaims(firebaseUid, {
+        phone: newPhoneNumber
+      });
+      
+      console.log('✅ Firebase custom claims updated with new phone number');
+      
+      // Verify the custom claims were set
+      const userRecord = await admin.auth().getUser(firebaseUid);
+      console.log('🔍 User custom claims after update:', userRecord.customClaims);
+      
+    } catch (firebaseError) {
+      console.error('❌ Error updating Firebase custom claims:', firebaseError);
+      console.error('❌ Error details:', {
+        code: firebaseError.code,
+        message: firebaseError.message,
+        stack: firebaseError.stack
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Numéro de téléphone mis à jour avec succès',
+      phone: newPhoneNumber
+    });
+
+  } catch (error) {
+    console.error('❌ Error setting new phone number:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la mise à jour du numéro de téléphone'
+    });
+  }
+});
+
+// @route   DELETE /api/auth/remove-phone
+// @desc    Remove user's phone number (requires previous verification)
+// @access  Private
+router.delete('/remove-phone', firebaseAuth, async (req, res) => {
+  try {
+    const firebaseUid = req.firebaseUser.uid;
+
+    // Get user from database
+    const user = await User.findOne({ where: { firebaseUid } });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    // Check if user has a phone number
+    if (!user.phone) {
+      return res.status(400).json({
+        success: false,
+        error: 'Aucun numéro de téléphone à supprimer'
+      });
+    }
+
+    // Remove phone number from database
+    await user.update({ phone: null });
+
+    // Remove phone from Firebase custom claims
+    try {
+      console.log('🔄 Attempting to remove phone from Firebase custom claims for UID:', firebaseUid);
+      
+      // Check if Firebase Admin is properly initialized
+      if (!admin.apps.length) {
+        throw new Error('Firebase Admin SDK not initialized');
+      }
+      
+      const currentClaims = await admin.auth().getUser(firebaseUid);
+      console.log('🔍 Current custom claims:', currentClaims.customClaims);
+      
+      const updatedClaims = { ...currentClaims.customClaims };
+      delete updatedClaims.phone;
+      
+      console.log('🔍 Updated custom claims (after removing phone):', updatedClaims);
+      
+      await admin.auth().setCustomUserClaims(firebaseUid, updatedClaims);
+      console.log('✅ Phone number removed from Firebase custom claims');
+      
+      // Verify the custom claims were updated
+      const userRecord = await admin.auth().getUser(firebaseUid);
+      console.log('🔍 User custom claims after removal:', userRecord.customClaims);
+      
+    } catch (firebaseError) {
+      console.error('❌ Error removing phone from Firebase custom claims:', firebaseError);
+      console.error('❌ Error details:', {
+        code: firebaseError.code,
+        message: firebaseError.message,
+        stack: firebaseError.stack
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Numéro de téléphone supprimé avec succès'
+    });
+
+  } catch (error) {
+    console.error('❌ Error removing phone number:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la suppression du numéro de téléphone'
     });
   }
 });

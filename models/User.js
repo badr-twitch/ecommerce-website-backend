@@ -110,6 +110,12 @@ const User = sequelize.define('User', {
     type: DataTypes.STRING,
     allowNull: true,
     comment: 'Display name from Firebase'
+  },
+  wishlist: {
+    type: DataTypes.JSON,
+    allowNull: true,
+    defaultValue: [],
+    comment: 'Array of product IDs in user wishlist'
   }
 }, {
   tableName: 'users',

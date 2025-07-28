@@ -21,6 +21,10 @@ class EmailService {
         auth: {
           user: process.env.EMAIL_USER,
           pass: process.env.EMAIL_PASS
+        },
+        // Outlook-friendly settings
+        tls: {
+          rejectUnauthorized: false
         }
       });
       this.enabled = true;
@@ -105,6 +109,124 @@ Ce code expire dans 10 minutes.
 
 Si vous n'avez pas demandé la suppression de votre compte, 
 veuillez ignorer cet email et contactez-nous immédiatement.
+
+Pour toute question, contactez-nous à support@umod.fr
+
+© 2024 UMOD. Tous droits réservés.
+    `.trim();
+  }
+
+  // Send current phone number verification email
+  async sendPhoneVerificationEmail(userEmail, userName, verificationCode, currentPhoneNumber) {
+    if (!this.enabled || !this.transporter) {
+      console.warn('⚠️ Email service is disabled. Skipping email send.');
+      return { success: true, messageId: 'email-disabled' };
+    }
+
+    try {
+      const htmlContent = await this.loadTemplate('phoneVerificationEmail', {
+        userName: userName,
+        userEmail: userEmail,
+        verificationCode: verificationCode,
+        currentPhoneNumber: currentPhoneNumber
+      });
+
+      const mailOptions = {
+        from: `"UMOD" <${process.env.EMAIL_USER}>`,
+        to: userEmail,
+        subject: '📱 Vérification de votre numéro de téléphone - UMOD',
+        html: htmlContent,
+        text: this.generatePhoneVerificationTextVersion(userName, verificationCode, currentPhoneNumber)
+      };
+
+      const result = await this.transporter.sendMail(mailOptions);
+      console.log('✅ Phone verification email sent successfully:', result.messageId);
+      console.log('📧 Email details:', {
+        from: mailOptions.from,
+        to: mailOptions.to,
+        subject: mailOptions.subject,
+        messageId: result.messageId
+      });
+      return { success: true, messageId: result.messageId };
+    } catch (error) {
+      console.error('❌ Error sending phone verification email:', error);
+      return { success: true, messageId: 'email-error' };
+    }
+  }
+
+  // Send phone number change verification email
+  async sendPhoneChangeVerificationEmail(userEmail, userName, verificationCode, newPhoneNumber) {
+    if (!this.enabled || !this.transporter) {
+      console.warn('⚠️ Email service is disabled. Skipping email send.');
+      return { success: true, messageId: 'email-disabled' };
+    }
+
+    try {
+      const htmlContent = await this.loadTemplate('phoneChangeEmail', {
+        userName: userName,
+        userEmail: userEmail,
+        verificationCode: verificationCode,
+        newPhoneNumber: newPhoneNumber
+      });
+
+      const mailOptions = {
+        from: `"UMOD" <${process.env.EMAIL_USER}>`,
+        to: userEmail,
+        subject: '📱 Vérification du changement de numéro de téléphone - UMOD',
+        html: htmlContent,
+        text: this.generatePhoneChangeTextVersion(userName, verificationCode, newPhoneNumber)
+      };
+
+      const result = await this.transporter.sendMail(mailOptions);
+      console.log('✅ Phone change verification email sent successfully:', result.messageId);
+      return { success: true, messageId: result.messageId };
+    } catch (error) {
+      console.error('❌ Error sending phone change verification email:', error);
+      return { success: true, messageId: 'email-error' };
+    }
+  }
+
+  // Generate text version of the current phone verification email
+  generatePhoneVerificationTextVersion(userName, verificationCode, currentPhoneNumber) {
+    return `
+Vérification de votre numéro de téléphone - UMOD
+
+Bonjour ${userName},
+
+Nous avons reçu une demande de modification de votre numéro de téléphone.
+Pour autoriser cette modification, veuillez utiliser le code de vérification ci-dessous.
+
+Numéro de téléphone actuel: ${currentPhoneNumber}
+Code de vérification: ${verificationCode}
+
+⚠️ IMPORTANT:
+- Ce code expire dans 10 minutes
+- Si vous n'avez pas demandé cette modification, ignorez cet email
+- Ce code est requis pour changer ou supprimer votre numéro de téléphone
+
+Pour toute question, contactez-nous à support@umod.fr
+
+© 2024 UMOD. Tous droits réservés.
+    `.trim();
+  }
+
+  // Generate text version of the phone change email
+  generatePhoneChangeTextVersion(userName, verificationCode, newPhoneNumber) {
+    return `
+Vérification du changement de numéro de téléphone - UMOD
+
+Bonjour ${userName},
+
+Nous avons reçu une demande de changement de votre numéro de téléphone.
+Pour confirmer ce changement, veuillez utiliser le code de vérification ci-dessous.
+
+Nouveau numéro de téléphone: ${newPhoneNumber}
+Code de vérification: ${verificationCode}
+
+⚠️ IMPORTANT:
+- Ce code expire dans 10 minutes
+- Si vous n'avez pas demandé ce changement, ignorez cet email
+- Une fois confirmé, l'ancien numéro sera remplacé définitivement
 
 Pour toute question, contactez-nous à support@umod.fr
 

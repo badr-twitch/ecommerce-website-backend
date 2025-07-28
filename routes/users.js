@@ -3,6 +3,7 @@ const { body, validationResult, query } = require('express-validator');
 const User = require('../models/User');
 const Order = require('../models/Order');
 const { auth, adminAuth } = require('../middleware/auth');
+const firebaseAuth = require('../middleware/firebaseAuth');
 
 const router = express.Router();
 
@@ -329,6 +330,226 @@ router.post('/:id/verify-email', [
     console.error('Erreur lors de la vérification de l\'email:', error);
     res.status(500).json({ 
       error: 'Erreur lors de la vérification de l\'email' 
+    });
+  }
+});
+
+// @route   GET /api/users/:id/wishlist
+// @desc    Get user wishlist
+// @access  Private
+router.get('/:id/wishlist', firebaseAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get user from database using Firebase UID
+    const user = await User.findOne({ where: { firebaseUid: req.firebaseUser.uid } });
+    if (!user) {
+      return res.status(404).json({ 
+        error: 'Utilisateur non trouvé' 
+      });
+    }
+
+    // Users can only access their own wishlist unless they're admin
+    if (user.role !== 'admin' && user.id !== id) {
+      return res.status(403).json({ 
+        error: 'Accès refusé' 
+      });
+    }
+
+    const wishlist = user.wishlist || [];
+    
+    // If wishlist is empty, return empty array
+    if (wishlist.length === 0) {
+      return res.json({ 
+        wishlist: [],
+        products: []
+      });
+    }
+
+    // Get products in wishlist
+    const Product = require('../models/Product');
+    const products = await Product.findAll({
+      where: {
+        id: wishlist,
+        isActive: true
+      },
+      include: [
+        {
+          model: require('../models/Category'),
+          as: 'category',
+          attributes: ['id', 'name']
+        }
+      ]
+    });
+
+    res.json({
+      wishlist,
+      products
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération de la wishlist:', error);
+    res.status(500).json({ 
+      error: 'Erreur lors de la récupération de la wishlist' 
+    });
+  }
+});
+
+// @route   POST /api/users/:id/wishlist
+// @desc    Add product to wishlist
+// @access  Private
+router.post('/:id/wishlist', firebaseAuth, [
+  body('productId').isUUID().withMessage('ID de produit invalide')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        error: 'Données invalides',
+        details: errors.array() 
+      });
+    }
+
+    const { id } = req.params;
+    const { productId } = req.body;
+
+    // Get user from database using Firebase UID
+    const user = await User.findOne({ where: { firebaseUid: req.firebaseUser.uid } });
+    if (!user) {
+      return res.status(404).json({ 
+        error: 'Utilisateur non trouvé' 
+      });
+    }
+
+    // Users can only modify their own wishlist unless they're admin
+    if (user.role !== 'admin' && user.id !== id) {
+      return res.status(403).json({ 
+        error: 'Accès refusé' 
+      });
+    }
+
+    // Check if product exists and is active
+    const Product = require('../models/Product');
+    const product = await Product.findOne({
+      where: {
+        id: productId,
+        isActive: true
+      }
+    });
+
+    if (!product) {
+      return res.status(404).json({ 
+        error: 'Produit non trouvé ou inactif' 
+      });
+    }
+
+    const wishlist = user.wishlist || [];
+    
+    // Check if product is already in wishlist
+    if (wishlist.includes(productId)) {
+      return res.status(400).json({ 
+        error: 'Produit déjà dans la wishlist' 
+      });
+    }
+
+    // Add product to wishlist
+    wishlist.push(productId);
+    await user.update({ wishlist });
+
+    res.json({
+      message: 'Produit ajouté à la wishlist',
+      wishlist
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de l\'ajout à la wishlist:', error);
+    res.status(500).json({ 
+      error: 'Erreur lors de l\'ajout à la wishlist' 
+    });
+  }
+});
+
+// @route   DELETE /api/users/:id/wishlist/:productId
+// @desc    Remove product from wishlist
+// @access  Private
+router.delete('/:id/wishlist/:productId', firebaseAuth, async (req, res) => {
+  try {
+    const { id, productId } = req.params;
+
+    // Get user from database using Firebase UID
+    const user = await User.findOne({ where: { firebaseUid: req.firebaseUser.uid } });
+    if (!user) {
+      return res.status(404).json({ 
+        error: 'Utilisateur non trouvé' 
+      });
+    }
+
+    // Users can only modify their own wishlist unless they're admin
+    if (user.role !== 'admin' && user.id !== id) {
+      return res.status(403).json({ 
+        error: 'Accès refusé' 
+      });
+    }
+
+    const wishlist = user.wishlist || [];
+    
+    // Check if product is in wishlist
+    if (!wishlist.includes(productId)) {
+      return res.status(400).json({ 
+        error: 'Produit non trouvé dans la wishlist' 
+      });
+    }
+
+    // Remove product from wishlist
+    const updatedWishlist = wishlist.filter(id => id !== productId);
+    await user.update({ wishlist: updatedWishlist });
+
+    res.json({
+      message: 'Produit retiré de la wishlist',
+      wishlist: updatedWishlist
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la suppression de la wishlist:', error);
+    res.status(500).json({ 
+      error: 'Erreur lors de la suppression de la wishlist' 
+    });
+  }
+});
+
+// @route   DELETE /api/users/:id/wishlist
+// @desc    Clear wishlist
+// @access  Private
+router.delete('/:id/wishlist', firebaseAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get user from database using Firebase UID
+    const user = await User.findOne({ where: { firebaseUid: req.firebaseUser.uid } });
+    if (!user) {
+      return res.status(404).json({ 
+        error: 'Utilisateur non trouvé' 
+      });
+    }
+
+    // Users can only modify their own wishlist unless they're admin
+    if (user.role !== 'admin' && user.id !== id) {
+      return res.status(403).json({ 
+        error: 'Accès refusé' 
+      });
+    }
+
+    await user.update({ wishlist: [] });
+
+    res.json({
+      message: 'Wishlist vidée',
+      wishlist: []
+    });
+
+  } catch (error) {
+    console.error('Erreur lors du vidage de la wishlist:', error);
+    res.status(500).json({ 
+      error: 'Erreur lors du vidage de la wishlist' 
     });
   }
 });
