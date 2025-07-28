@@ -1,5 +1,6 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
+const { Op } = require('sequelize');
 const router = express.Router();
 
 // Import models
@@ -8,6 +9,13 @@ const Product = require('../models/Product');
 const Category = require('../models/Category');
 const Order = require('../models/Order');
 const OrderItem = require('../models/OrderItem');
+const ShippingAddress = require('../models/ShippingAddress');
+const PaymentMethod = require('../models/PaymentMethod');
+const StockHistory = require('../models/StockHistory');
+const inventoryService = require('../services/inventoryService');
+
+// Import models index to ensure associations are loaded
+require('../models/index');
 
 // Import middleware
 const firebaseAuth = require('../middleware/firebaseAuth');
@@ -32,19 +40,15 @@ router.get('/dashboard', async (req, res) => {
     // Get recent orders
     const recentOrders = await Order.findAll({
       include: [
-        { model: User, as: 'user', attributes: ['firstName', 'lastName', 'email'] },
-        { model: OrderItem, as: 'orderItems', include: [{ model: Product, as: 'product' }] }
+        { model: User, as: 'user', attributes: ['firstName', 'lastName', 'email'] }
       ],
       order: [['createdAt', 'DESC']],
       limit: 10
     });
 
-    // Get top selling products
+    // Get top selling products (simplified query)
     const topProducts = await Product.findAll({
-      include: [
-        { model: OrderItem, as: 'orderItems' }
-      ],
-      order: [[{ model: OrderItem, as: 'orderItems' }, 'quantity', 'DESC']],
+      order: [['createdAt', 'DESC']],
       limit: 5
     });
 
@@ -118,7 +122,7 @@ router.post('/products', [
   body('name').trim().isLength({ min: 2, max: 100 }).withMessage('Le nom doit contenir entre 2 et 100 caractères'),
   body('description').trim().isLength({ min: 10 }).withMessage('La description doit contenir au moins 10 caractères'),
   body('price').isFloat({ min: 0 }).withMessage('Le prix doit être un nombre positif'),
-  body('stock').isInt({ min: 0 }).withMessage('Le stock doit être un nombre entier positif'),
+  body('stockQuantity').isInt({ min: 0 }).withMessage('Le stock doit être un nombre entier positif'),
   body('categoryId').isUUID().withMessage('Catégorie invalide'),
   body('imageUrl').optional().custom((value) => {
     if (value && value.trim() !== '') {
@@ -172,7 +176,7 @@ router.put('/products/:id', [
   body('name').optional().trim().isLength({ min: 2, max: 100 }).withMessage('Le nom doit contenir entre 2 et 100 caractères'),
   body('description').optional().trim().isLength({ min: 10 }).withMessage('La description doit contenir au moins 10 caractères'),
   body('price').optional().isFloat({ min: 0 }).withMessage('Le prix doit être un nombre positif'),
-  body('stock').optional().isInt({ min: 0 }).withMessage('Le stock doit être un nombre entier positif'),
+  body('stockQuantity').optional().isInt({ min: 0 }).withMessage('Le stock doit être un nombre entier positif'),
   body('categoryId').optional().isUUID().withMessage('Catégorie invalide'),
   body('imageUrl').optional().custom((value) => {
     if (value && value.trim() !== '') {
@@ -188,8 +192,10 @@ router.put('/products/:id', [
   })
 ], async (req, res) => {
   try {
+    console.log('🔍 Product update request body:', req.body);
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('❌ Product update validation errors:', errors.array());
       return res.status(400).json({
         success: false,
         error: 'Données invalides',
@@ -205,12 +211,15 @@ router.put('/products/:id', [
       });
     }
 
+    console.log('🔍 Updating product with data:', req.body);
     await product.update(req.body);
+    console.log('✅ Product updated successfully');
 
     // Get updated product with category
     const updatedProduct = await Product.findByPk(product.id, {
       include: [{ model: Category, as: 'category' }]
     });
+    console.log('🔍 Updated product data:', updatedProduct.toJSON());
 
     res.json({
       success: true,
@@ -435,19 +444,70 @@ router.delete('/categories/:id', async (req, res) => {
 // ==================== ORDER MANAGEMENT ====================
 
 // @route   GET /api/admin/orders
-// @desc    Get all orders with pagination
+// @desc    Get all orders with pagination and filtering
 // @access  Admin
 router.get('/orders', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
+    
+    // Filter parameters
+    const { status, search, startDate, endDate, minAmount, maxAmount } = req.query;
+    
+    // Build where clause
+    const whereClause = {};
+    if (status && status !== 'all') {
+      whereClause.status = status;
+    }
+    if (startDate) {
+      whereClause.createdAt = { [Op.gte]: new Date(startDate) };
+    }
+    if (endDate) {
+      if (whereClause.createdAt) {
+        whereClause.createdAt[Op.lte] = new Date(endDate);
+      } else {
+        whereClause.createdAt = { [Op.lte]: new Date(endDate) };
+      }
+    }
+    if (minAmount) {
+      whereClause.totalAmount = { [Op.gte]: parseFloat(minAmount) };
+    }
+    if (maxAmount) {
+      if (whereClause.totalAmount) {
+        whereClause.totalAmount[Op.lte] = parseFloat(maxAmount);
+      } else {
+        whereClause.totalAmount = { [Op.lte]: parseFloat(maxAmount) };
+      }
+    }
+
+    const includeOptions = [
+      { 
+        model: User, 
+        as: 'user', 
+        attributes: ['firstName', 'lastName', 'email']
+      },
+      { 
+        model: OrderItem, 
+        as: 'orderItems', 
+        include: [{ model: Product, as: 'product' }] 
+      }
+    ];
+
+    // Add search filter to user include if search is provided
+    if (search) {
+      includeOptions[0].where = {
+        [Op.or]: [
+          { firstName: { [Op.like]: `%${search}%` } },
+          { lastName: { [Op.like]: `%${search}%` } },
+          { email: { [Op.like]: `%${search}%` } }
+        ]
+      };
+    }
 
     const orders = await Order.findAndCountAll({
-      include: [
-        { model: User, as: 'user', attributes: ['firstName', 'lastName', 'email'] },
-        { model: OrderItem, as: 'orderItems', include: [{ model: Product, as: 'product' }] }
-      ],
+      where: whereClause,
+      include: includeOptions,
       order: [['createdAt', 'DESC']],
       limit,
       offset
@@ -468,18 +528,69 @@ router.get('/orders', async (req, res) => {
 
   } catch (error) {
     console.error('❌ Get orders error:', error);
+    console.error('❌ Error details:', error.message);
+    console.error('❌ Error stack:', error.stack);
     res.status(500).json({
       success: false,
-      error: 'Erreur lors de la récupération des commandes'
+      error: 'Erreur lors de la récupération des commandes',
+      details: error.message
+    });
+  }
+});
+
+// @route   GET /api/admin/orders/:id
+// @desc    Get detailed order information
+// @access  Admin
+router.get('/orders/:id', async (req, res) => {
+  try {
+    const order = await Order.findByPk(req.params.id, {
+      include: [
+        { 
+          model: User, 
+          as: 'user', 
+          attributes: ['firstName', 'lastName', 'email', 'phone', 'createdAt']
+        },
+        { 
+          model: OrderItem, 
+          as: 'orderItems', 
+          include: [{ 
+            model: Product, 
+            as: 'product',
+            attributes: ['id', 'name', 'price', 'imageUrl', 'sku']
+          }] 
+        },
+        { model: ShippingAddress, as: 'shippingAddress' },
+        { model: PaymentMethod, as: 'paymentMethod' }
+      ]
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: 'Commande non trouvée'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: order
+    });
+
+  } catch (error) {
+    console.error('❌ Get order details error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des détails de la commande'
     });
   }
 });
 
 // @route   PUT /api/admin/orders/:id/status
-// @desc    Update order status
+// @desc    Update order status with comments
 // @access  Admin
 router.put('/orders/:id/status', [
-  body('status').isIn(['pending', 'processing', 'shipped', 'delivered', 'cancelled']).withMessage('Statut invalide')
+  body('status').isIn(['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded']).withMessage('Statut invalide'),
+  body('comment').optional().trim().isLength({ max: 500 }).withMessage('Le commentaire ne doit pas dépasser 500 caractères')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -499,7 +610,15 @@ router.put('/orders/:id/status', [
       });
     }
 
-    await order.update({ status: req.body.status });
+    const oldStatus = order.status;
+    await order.update({ 
+      status: req.body.status,
+      statusComment: req.body.comment || null,
+      statusUpdatedAt: new Date()
+    });
+
+    // TODO: Send email notification to customer about status change
+    // await sendOrderStatusEmail(order.user.email, order, oldStatus, req.body.status);
 
     res.json({
       success: true,
@@ -641,6 +760,182 @@ router.put('/users/:id/role', [
     res.status(500).json({
       success: false,
       error: 'Erreur lors du changement de rôle utilisateur'
+    });
+  }
+});
+
+// ==================== INVENTORY MANAGEMENT ====================
+
+// @route   GET /api/admin/inventory/alerts
+// @desc    Get low stock alerts
+// @access  Admin
+router.get('/inventory/alerts', async (req, res) => {
+  try {
+    const lowStockProducts = await inventoryService.getLowStockProducts();
+    const stats = await inventoryService.getInventoryStats();
+
+    res.json({
+      success: true,
+      data: {
+        lowStockProducts,
+        stats
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get inventory alerts error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des alertes d\'inventaire'
+    });
+  }
+});
+
+// @route   GET /api/admin/inventory/history/:productId
+// @desc    Get stock history for a product
+// @access  Admin
+router.get('/inventory/history/:productId', async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const limit = parseInt(req.query.limit) || 50;
+    
+    const history = await inventoryService.getStockHistory(productId, limit);
+
+    res.json({
+      success: true,
+      data: history
+    });
+
+  } catch (error) {
+    console.error('❌ Get stock history error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération de l\'historique des stocks'
+    });
+  }
+});
+
+// @route   POST /api/admin/inventory/update-stock
+// @desc    Update product stock
+// @access  Admin
+router.post('/inventory/update-stock', [
+  body('productId').isUUID().withMessage('ID de produit invalide'),
+  body('quantity').isInt().withMessage('Quantité invalide'),
+  body('changeType').isIn(['in', 'out', 'adjustment']).withMessage('Type de changement invalide'),
+  body('reason').trim().isLength({ min: 1 }).withMessage('Raison requise'),
+  body('notes').optional().trim()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Données invalides',
+        details: errors.array()
+      });
+    }
+
+    const { productId, quantity, changeType, reason, notes } = req.body;
+    const performedBy = req.user.id;
+
+    const result = await inventoryService.updateStock(
+      productId,
+      quantity,
+      changeType,
+      reason,
+      null,
+      'manual',
+      notes,
+      performedBy
+    );
+
+    res.json({
+      success: true,
+      message: 'Stock mis à jour avec succès',
+      data: result
+    });
+
+  } catch (error) {
+    console.error('❌ Update stock error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Erreur lors de la mise à jour du stock'
+    });
+  }
+});
+
+// @route   POST /api/admin/inventory/bulk-update
+// @desc    Bulk update stock levels
+// @access  Admin
+router.post('/inventory/bulk-update', [
+  body('updates').isArray().withMessage('Mises à jour invalides'),
+  body('updates.*.productId').isUUID().withMessage('ID de produit invalide'),
+  body('updates.*.quantity').isInt().withMessage('Quantité invalide'),
+  body('updates.*.changeType').isIn(['in', 'out', 'adjustment']).withMessage('Type de changement invalide'),
+  body('updates.*.reason').trim().isLength({ min: 1 }).withMessage('Raison requise')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Données invalides',
+        details: errors.array()
+      });
+    }
+
+    const { updates } = req.body;
+    const performedBy = req.user.id;
+
+    const results = await inventoryService.bulkUpdateStock(updates, performedBy);
+
+    res.json({
+      success: true,
+      message: 'Mise à jour en masse terminée',
+      data: results
+    });
+
+  } catch (error) {
+    console.error('❌ Bulk update stock error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la mise à jour en masse'
+    });
+  }
+});
+
+// @route   PUT /api/admin/inventory/reorder-point/:productId
+// @desc    Set reorder point for a product
+// @access  Admin
+router.put('/inventory/reorder-point/:productId', [
+  body('reorderPoint').isInt({ min: 0 }).withMessage('Point de réapprovisionnement invalide')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Point de réapprovisionnement invalide',
+        details: errors.array()
+      });
+    }
+
+    const { productId } = req.params;
+    const { reorderPoint } = req.body;
+
+    const result = await inventoryService.setReorderPoint(productId, reorderPoint);
+
+    res.json({
+      success: true,
+      message: 'Point de réapprovisionnement mis à jour avec succès',
+      data: result
+    });
+
+  } catch (error) {
+    console.error('❌ Set reorder point error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Erreur lors de la mise à jour du point de réapprovisionnement'
     });
   }
 });

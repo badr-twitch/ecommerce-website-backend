@@ -11,7 +11,6 @@ const User = sequelize.define('User', {
   firebaseUid: {
     type: DataTypes.STRING,
     allowNull: true,
-    unique: true,
     comment: 'Firebase Authentication UID'
   },
   firstName: {

@@ -30,6 +30,7 @@ const OrderItem = require('./OrderItem');
 const Cart = require('./Cart');
 const CartItem = require('./CartItem');
 const Review = require('./Review');
+const StockHistory = require('./StockHistory');
 
 // Define associations
 User.hasMany(Order, { foreignKey: 'userId', as: 'orders' });
@@ -59,6 +60,23 @@ OrderItem.belongsTo(Order, { foreignKey: 'orderId', as: 'order' });
 Product.hasMany(OrderItem, { foreignKey: 'productId', as: 'orderItems' });
 OrderItem.belongsTo(Product, { foreignKey: 'productId', as: 'product' });
 
+// Stock history associations
+Product.hasMany(StockHistory, { foreignKey: 'productId', as: 'stockHistory' });
+StockHistory.belongsTo(Product, { foreignKey: 'productId', as: 'product' });
+
+User.hasMany(StockHistory, { foreignKey: 'performedBy', as: 'stockChanges' });
+StockHistory.belongsTo(User, { foreignKey: 'performedBy', as: 'performedByUser' });
+
+// Self-referential association for categories
+Category.hasMany(Category, { 
+  as: 'children', 
+  foreignKey: 'parentId' 
+});
+Category.belongsTo(Category, { 
+  as: 'parent', 
+  foreignKey: 'parentId' 
+});
+
 module.exports = {
   sequelize,
   User,
@@ -68,5 +86,6 @@ module.exports = {
   OrderItem,
   Cart,
   CartItem,
-  Review
+  Review,
+  StockHistory
 }; 

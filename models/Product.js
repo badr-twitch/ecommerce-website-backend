@@ -72,6 +72,27 @@ const Product = sequelize.define('Product', {
       min: 0
     }
   },
+  reorderPoint: {
+    type: DataTypes.INTEGER,
+    defaultValue: 10,
+    validate: {
+      min: 0
+    },
+    comment: 'Stock level at which to trigger reorder alert'
+  },
+  maxStockLevel: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    validate: {
+      min: 0
+    },
+    comment: 'Maximum stock level for this product'
+  },
+  lastStockAlert: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    comment: 'Date of last low stock alert sent'
+  },
   weight: {
     type: DataTypes.DECIMAL(8, 2),
     allowNull: true,
