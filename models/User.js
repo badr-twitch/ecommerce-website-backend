@@ -115,6 +115,12 @@ const User = sequelize.define('User', {
     allowNull: true,
     defaultValue: [],
     comment: 'Array of product IDs in user wishlist'
+  },
+  notificationSettings: {
+    type: DataTypes.JSONB,
+    allowNull: true,
+    defaultValue: {},
+    comment: 'Global notification settings like globalSounds'
   }
 }, {
   tableName: 'users',

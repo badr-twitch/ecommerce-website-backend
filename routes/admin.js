@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { Op } = require('sequelize');
+const sequelize = require('../config/database');
 const router = express.Router();
 
 // Import models
@@ -27,29 +28,132 @@ router.use(firebaseAuth, adminAuth);
 // ==================== DASHBOARD ====================
 
 // @route   GET /api/admin/dashboard
-// @desc    Get admin dashboard statistics
+// @desc    Get admin dashboard statistics with real analytics
 // @access  Admin
 router.get('/dashboard', async (req, res) => {
   try {
-    // Get statistics
+    // Basic statistics
     const totalUsers = await User.count({ where: { role: 'client' } });
     const totalProducts = await Product.count();
     const totalCategories = await Category.count();
     const totalOrders = await Order.count();
     
-    // Get recent orders
+    // Enhanced revenue calculation
+    const completedOrders = await Order.findAll({
+      where: { status: ['delivered', 'shipped'] },
+      attributes: ['totalAmount', 'createdAt']
+    });
+    
+    const totalRevenue = completedOrders.reduce((sum, order) => sum + parseFloat(order.totalAmount), 0);
+    const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
+    
+    // Real revenue trends (last 7 days)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    
+    const revenueData = await Order.findAll({
+      where: {
+        status: ['delivered', 'shipped'],
+        createdAt: {
+          [Op.gte]: sevenDaysAgo
+        }
+      },
+      attributes: [
+        [sequelize.fn('DATE', sequelize.col('createdAt')), 'date'],
+        [sequelize.fn('SUM', sequelize.col('totalAmount')), 'revenue']
+      ],
+      group: [sequelize.fn('DATE', sequelize.col('createdAt'))],
+      order: [[sequelize.fn('DATE', sequelize.col('createdAt')), 'ASC']]
+    });
+    
+    // Real user registration trends (last 7 days)
+    const userRegistrationData = await User.findAll({
+      where: {
+        role: 'client',
+        createdAt: {
+          [Op.gte]: sevenDaysAgo
+        }
+      },
+      attributes: [
+        [sequelize.fn('DATE', sequelize.col('createdAt')), 'date'],
+        [sequelize.fn('COUNT', sequelize.col('id')), 'registrations']
+      ],
+      group: [sequelize.fn('DATE', sequelize.col('createdAt'))],
+      order: [[sequelize.fn('DATE', sequelize.col('createdAt')), 'ASC']]
+    });
+    
+    // Real order status distribution
+    const orderStatusDistribution = await Order.findAll({
+      attributes: [
+        'status',
+        [sequelize.fn('COUNT', sequelize.col('id')), 'count']
+      ],
+      group: ['status']
+    });
+    
+    // Real top selling products (by order items)
+    const topProducts = await OrderItem.findAll({
+      include: [
+        {
+          model: Product,
+          as: 'product',
+          attributes: ['id', 'name', 'mainImage', 'price']
+        }
+      ],
+      attributes: [
+        'productId',
+        [sequelize.fn('SUM', sequelize.col('quantity')), 'totalSold'],
+        [sequelize.fn('SUM', sequelize.literal('quantity * "product"."price"')), 'totalRevenue']
+      ],
+      group: ['productId', 'product.id', 'product.name', 'product.mainImage', 'product.price'],
+      order: [[sequelize.fn('SUM', sequelize.col('quantity')), 'DESC']],
+      limit: 5
+    });
+    
+    // Low stock products count
+    const lowStockProducts = await Product.count({
+      where: {
+        stockQuantity: {
+          [Op.lte]: 10 // Count products with stock <= 10
+        }
+      }
+    });
+    
+    // Conversion rate (orders per user)
+    const conversionRate = totalUsers > 0 ? (totalOrders / totalUsers * 100).toFixed(2) : 0;
+    
+    // Monthly growth rates
+    const lastMonth = new Date();
+    lastMonth.setMonth(lastMonth.getMonth() - 1);
+    
+    const currentMonthOrders = await Order.count({
+      where: {
+        createdAt: {
+          [Op.gte]: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+        }
+      }
+    });
+    
+    const lastMonthOrders = await Order.count({
+      where: {
+        createdAt: {
+          [Op.gte]: lastMonth,
+          [Op.lt]: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+        }
+      }
+    });
+    
+    const orderGrowthRate = lastMonthOrders > 0 
+      ? ((currentMonthOrders - lastMonthOrders) / lastMonthOrders * 100).toFixed(2)
+      : 0;
+
+    // Recent orders with user info
     const recentOrders = await Order.findAll({
       include: [
         { model: User, as: 'user', attributes: ['firstName', 'lastName', 'email'] }
       ],
       order: [['createdAt', 'DESC']],
       limit: 10
-    });
-
-    // Get top selling products (simplified query)
-    const topProducts = await Product.findAll({
-      order: [['createdAt', 'DESC']],
-      limit: 5
     });
 
     res.json({
@@ -59,10 +163,36 @@ router.get('/dashboard', async (req, res) => {
           totalUsers,
           totalProducts,
           totalCategories,
-          totalOrders
+          totalOrders,
+          totalRevenue: totalRevenue.toFixed(2),
+          averageOrderValue: averageOrderValue.toFixed(2),
+          conversionRate: parseFloat(conversionRate),
+          orderGrowthRate: parseFloat(orderGrowthRate),
+          lowStockProducts
         },
-        recentOrders,
-        topProducts
+        charts: {
+          revenueTrend: revenueData.map(item => ({
+            date: item.dataValues.date,
+            revenue: parseFloat(item.dataValues.revenue || 0)
+          })),
+          userRegistrations: userRegistrationData.map(item => ({
+            date: item.dataValues.date,
+            registrations: parseInt(item.dataValues.registrations)
+          })),
+          orderStatusDistribution: orderStatusDistribution.map(item => ({
+            status: item.status,
+            count: parseInt(item.dataValues.count)
+          }))
+        },
+        topProducts: topProducts.map(item => ({
+          id: item.product.id,
+          name: item.product.name,
+          imageUrl: item.product.mainImage,
+          price: item.product.price,
+          totalSold: parseInt(item.dataValues.totalSold || 0),
+          totalRevenue: parseFloat(item.dataValues.totalRevenue || 0).toFixed(2)
+        })),
+        recentOrders
       }
     });
 

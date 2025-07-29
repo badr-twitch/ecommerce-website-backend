@@ -31,6 +31,8 @@ const Cart = require('./Cart');
 const CartItem = require('./CartItem');
 const Review = require('./Review');
 const StockHistory = require('./StockHistory');
+const Notification = require('./Notification');
+const NotificationPreference = require('./NotificationPreference');
 
 // Define associations
 User.hasMany(Order, { foreignKey: 'userId', as: 'orders' });
@@ -67,6 +69,13 @@ StockHistory.belongsTo(Product, { foreignKey: 'productId', as: 'product' });
 User.hasMany(StockHistory, { foreignKey: 'performedBy', as: 'stockChanges' });
 StockHistory.belongsTo(User, { foreignKey: 'performedBy', as: 'performedByUser' });
 
+// Notification associations
+User.hasMany(Notification, { foreignKey: 'userId', as: 'notifications' });
+Notification.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+User.hasMany(NotificationPreference, { foreignKey: 'userId', as: 'notificationPreferences' });
+NotificationPreference.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
 // Self-referential association for categories
 Category.hasMany(Category, { 
   as: 'children', 
@@ -87,5 +96,7 @@ module.exports = {
   Cart,
   CartItem,
   Review,
-  StockHistory
+  StockHistory,
+  Notification,
+  NotificationPreference
 }; 

@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const path = require('path');
+const http = require('http');
+const socketIo = require('socket.io');
 
 // Load environment variables
 dotenv.config();
@@ -54,6 +56,15 @@ if (!admin.apps.length) {
 }
 
 const app = express();
+const server = http.createServer(app);
+const io = socketIo(server, {
+  cors: {
+    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+    methods: ['GET', 'POST'],
+    credentials: true
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 
 // Middleware
@@ -104,15 +115,24 @@ sequelize.authenticate()
     console.error('❌ Erreur de connexion à la base de données:', err);
   });
 
+// Initialize Notification Service
+const NotificationService = require('./services/notificationService');
+const notificationService = new NotificationService(io);
+
 // Import routes
 const authRoutes = require('./routes/auth');
 const productRoutes = require('./routes/products');
-const orderRoutes = require('./routes/orders');
+const { router: orderRoutes, setNotificationService: setOrderNotificationService } = require('./routes/orders');
 const userRoutes = require('./routes/users');
 const categoryRoutes = require('./routes/categories');
 const paymentMethodRoutes = require('./routes/paymentMethods');
 const shippingAddressRoutes = require('./routes/shippingAddresses');
 const adminRoutes = require('./routes/admin');
+const { router: notificationRoutes, setNotificationService } = require('./routes/notifications');
+
+// Set notification service in routes
+setNotificationService(notificationService);
+setOrderNotificationService(notificationService);
 
 // API Routes
 app.use('/api/auth', authRoutes);
@@ -123,6 +143,45 @@ app.use('/api/categories', categoryRoutes);
 app.use('/api/payment-methods', paymentMethodRoutes);
 app.use('/api/shipping-addresses', shippingAddressRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/notifications', notificationRoutes);
+
+// WebSocket connection handling
+io.on('connection', (socket) => {
+  console.log(`🔌 Client connected: ${socket.id}`);
+
+  // Join admin room
+  socket.on('join-admin', () => {
+    socket.join('admin');
+    console.log(`👑 Admin joined room: ${socket.id}`);
+  });
+
+  // Join user room
+  socket.on('join-user', async (userId) => {
+    try {
+      // Verify user exists
+      const user = await User.findOne({ where: { firebaseUid: userId } });
+      if (user) {
+        socket.join(`user-${user.id}`);
+        notificationService.addUserToRoom(user.id, socket.id);
+        console.log(`👤 User ${user.id} joined room: ${socket.id}`);
+      }
+    } catch (error) {
+      console.error('❌ Error joining user room:', error);
+    }
+  });
+
+  // Handle disconnection
+  socket.on('disconnect', () => {
+    console.log(`🔌 Client disconnected: ${socket.id}`);
+    // Remove user from notification service
+    for (const [userId, socketId] of notificationService.userRooms.entries()) {
+      if (socketId === socket.id) {
+        notificationService.removeUserFromRoom(userId);
+        break;
+      }
+    }
+  });
+});
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -148,10 +207,12 @@ app.use('*', (req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`🚀 Serveur ecommerce français démarré sur le port ${PORT}`);
   console.log(`📱 Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
   console.log(`🔗 API URL: http://localhost:${PORT}/api`);
+  console.log(`🔌 WebSocket URL: ws://localhost:${PORT}`);
 });
 
-module.exports = app;
+// Export for testing
+module.exports = { app, server, io, notificationService };

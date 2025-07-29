@@ -8,6 +8,25 @@ const { auth, adminAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Initialize notification service (will be set by server.js)
+let notificationService;
+
+// Set notification service instance
+const setNotificationService = (service) => {
+  notificationService = service;
+};
+
+// Helper function to safely trigger notifications
+const safeNotify = async (notificationFunction, ...args) => {
+  if (notificationService) {
+    try {
+      await notificationFunction.apply(notificationService, args);
+    } catch (error) {
+      console.error('❌ Error triggering notification:', error);
+    }
+  }
+};
+
 // Generate order number
 const generateOrderNumber = () => {
   const timestamp = Date.now().toString();
@@ -98,7 +117,7 @@ router.get('/:id', auth, async (req, res) => {
 
     const whereClause = { id };
     
-    // If not admin, only allow access to own orders
+    // If not admin, only show user's orders
     if (req.user.role !== 'admin') {
       whereClause.userId = req.user.id;
     }
@@ -113,7 +132,7 @@ router.get('/:id', auth, async (req, res) => {
             {
               model: Product,
               as: 'product',
-              attributes: ['id', 'name', 'mainImage', 'sku']
+              attributes: ['id', 'name', 'mainImage', 'price', 'discountPercentage']
             }
           ]
         }
@@ -137,22 +156,25 @@ router.get('/:id', auth, async (req, res) => {
 });
 
 // @route   POST /api/orders
-// @desc    Create a new order
+// @desc    Create new order
 // @access  Private
 router.post('/', auth, [
-  body('items').isArray({ min: 1 }).withMessage('Au moins un article requis'),
-  body('items.*.productId').isUUID().withMessage('Product ID invalide'),
+  body('items').isArray({ min: 1 }).withMessage('Au moins un produit est requis'),
+  body('items.*.productId').isUUID().withMessage('ID de produit invalide'),
   body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantité invalide'),
-  body('customerFirstName').trim().isLength({ min: 2, max: 50 }),
-  body('customerLastName').trim().isLength({ min: 2, max: 50 }),
-  body('customerEmail').isEmail().normalizeEmail(),
-  body('billingAddress').trim().notEmpty(),
-  body('billingCity').trim().notEmpty(),
-  body('billingPostalCode').trim().notEmpty(),
-  body('shippingAddress').trim().notEmpty(),
-  body('shippingCity').trim().notEmpty(),
-  body('shippingPostalCode').trim().notEmpty(),
-  body('paymentMethod').isIn(['card', 'paypal', 'bank_transfer', 'cash_on_delivery']),
+  body('customerFirstName').trim().notEmpty().withMessage('Prénom requis'),
+  body('customerLastName').trim().notEmpty().withMessage('Nom requis'),
+  body('customerEmail').isEmail().withMessage('Email invalide'),
+  body('customerPhone').optional().trim(),
+  body('billingAddress').trim().notEmpty().withMessage('Adresse de facturation requise'),
+  body('billingCity').trim().notEmpty().withMessage('Ville de facturation requise'),
+  body('billingPostalCode').trim().notEmpty().withMessage('Code postal de facturation requis'),
+  body('billingCountry').trim().notEmpty().withMessage('Pays de facturation requis'),
+  body('shippingAddress').trim().notEmpty().withMessage('Adresse de livraison requise'),
+  body('shippingCity').trim().notEmpty().withMessage('Ville de livraison requise'),
+  body('shippingPostalCode').trim().notEmpty().withMessage('Code postal de livraison requis'),
+  body('shippingCountry').trim().notEmpty().withMessage('Pays de livraison requis'),
+  body('paymentMethod').trim().notEmpty().withMessage('Méthode de paiement requise'),
   body('customerNotes').optional().trim()
 ], async (req, res) => {
   try {
@@ -173,16 +195,16 @@ router.post('/', auth, [
       billingAddress,
       billingCity,
       billingPostalCode,
-      billingCountry = 'France',
+      billingCountry,
       shippingAddress,
       shippingCity,
       shippingPostalCode,
-      shippingCountry = 'France',
+      shippingCountry,
       paymentMethod,
       customerNotes
     } = req.body;
 
-    // Validate and calculate order totals
+    // Validate products and calculate totals
     let subtotal = 0;
     const orderItems = [];
 
@@ -190,13 +212,7 @@ router.post('/', auth, [
       const product = await Product.findByPk(item.productId);
       if (!product) {
         return res.status(400).json({ 
-          error: `Produit non trouvé: ${item.productId}` 
-        });
-      }
-
-      if (!product.isInStock()) {
-        return res.status(400).json({ 
-          error: `Produit en rupture de stock: ${product.name}` 
+          error: `Produit ${item.productId} non trouvé` 
         });
       }
 
@@ -277,6 +293,9 @@ router.post('/', auth, [
       ]
     });
 
+    // Trigger notification for new order
+    await safeNotify(notificationService.notifyNewOrder, order.id);
+
     res.status(201).json({
       message: 'Commande créée avec succès',
       order: orderWithItems
@@ -317,6 +336,7 @@ router.put('/:id/status', adminAuth, [
       });
     }
 
+    const oldStatus = order.status;
     const updateData = { status };
     
     // Update timestamps based on status
@@ -341,6 +361,11 @@ router.put('/:id/status', adminAuth, [
     }
 
     await order.update(updateData);
+
+    // Trigger notification for status change
+    if (notificationService && oldStatus !== status) {
+      await safeNotify(notificationService.notifyOrderStatusChange, order.id, oldStatus, status);
+    }
 
     res.json({
       message: 'Statut de la commande mis à jour avec succès',
@@ -380,6 +405,7 @@ router.post('/:id/cancel', auth, async (req, res) => {
       });
     }
 
+    const oldStatus = order.status;
     await order.update({
       status: 'cancelled',
       cancelledAt: new Date()
@@ -397,6 +423,11 @@ router.post('/:id/cancel', auth, async (req, res) => {
       });
     }
 
+    // Trigger notification for status change
+    if (notificationService && oldStatus !== 'cancelled') {
+      await safeNotify(notificationService.notifyOrderStatusChange, order.id, oldStatus, 'cancelled');
+    }
+
     res.json({
       message: 'Commande annulée avec succès',
       order: order.toJSON()
@@ -410,4 +441,4 @@ router.post('/:id/cancel', auth, async (req, res) => {
   }
 });
 
-module.exports = router; 
+module.exports = { router, setNotificationService }; 
