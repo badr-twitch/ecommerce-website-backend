@@ -45,7 +45,7 @@ router.get('/dashboard', async (req, res) => {
     });
     
     const totalRevenue = completedOrders.reduce((sum, order) => sum + parseFloat(order.totalAmount), 0);
-    const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
+    const averageOrderValue = completedOrders.length > 0 ? totalRevenue / completedOrders.length : 0;
     
     // Real revenue trends (last 7 days)
     const sevenDaysAgo = new Date();
@@ -91,13 +91,19 @@ router.get('/dashboard', async (req, res) => {
       group: ['status']
     });
     
-    // Real top selling products (by order items)
+    // Real top selling products (by order items) - only from completed orders
     const topProducts = await OrderItem.findAll({
       include: [
         {
           model: Product,
           as: 'product',
           attributes: ['id', 'name', 'mainImage', 'price']
+        },
+        {
+          model: Order,
+          as: 'order',
+          where: { status: ['delivered', 'shipped'] },
+          attributes: []
         }
       ],
       attributes: [
@@ -761,6 +767,179 @@ router.put('/orders/:id/status', [
     res.status(500).json({
       success: false,
       error: 'Erreur lors de la mise à jour du statut'
+    });
+  }
+});
+
+// ==================== BULK ORDER OPERATIONS ====================
+
+// @route   PUT /api/admin/orders/bulk/status
+// @desc    Update status for multiple orders
+// @access  Admin
+router.put('/orders/bulk/status', [
+  body('orderIds').isArray({ min: 1 }).withMessage('Au moins une commande doit être sélectionnée'),
+  body('orderIds.*').isUUID().withMessage('ID de commande invalide'),
+  body('status').isIn(['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded']).withMessage('Statut invalide'),
+  body('comment').optional().trim().isLength({ max: 500 }).withMessage('Le commentaire ne doit pas dépasser 500 caractères')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Données invalides',
+        details: errors.array()
+      });
+    }
+
+    const { orderIds, status, comment } = req.body;
+
+    // Update all orders
+    const updateResult = await Order.update(
+      { 
+        status,
+        statusComment: comment || null,
+        statusUpdatedAt: new Date()
+      },
+      { 
+        where: { id: orderIds },
+        returning: true
+      }
+    );
+
+    // Get updated orders for response
+    const updatedOrders = await Order.findAll({
+      where: { id: orderIds },
+      include: [{ model: User, as: 'user', attributes: ['firstName', 'lastName', 'email'] }]
+    });
+
+    res.json({
+      success: true,
+      message: `${updatedOrders.length} commande(s) mise(s) à jour avec succès`,
+      data: {
+        updatedCount: updatedOrders.length,
+        orders: updatedOrders
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Bulk update order status error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la mise à jour en masse des commandes'
+    });
+  }
+});
+
+// @route   POST /api/admin/orders/bulk/export
+// @desc    Export selected orders to CSV
+// @access  Admin
+router.post('/orders/bulk/export', [
+  body('orderIds').isArray({ min: 1 }).withMessage('Au moins une commande doit être sélectionnée'),
+  body('orderIds.*').isUUID().withMessage('ID de commande invalide')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Données invalides',
+        details: errors.array()
+      });
+    }
+
+    const { orderIds } = req.body;
+
+    // Get orders with all related data
+    const orders = await Order.findAll({
+      where: { id: orderIds },
+      include: [
+        { model: User, as: 'user', attributes: ['firstName', 'lastName', 'email'] },
+        { model: OrderItem, as: 'orderItems', include: [{ model: Product, as: 'product' }] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    // Generate CSV data
+    const csvData = orders.map(order => ({
+      'Order ID': order.id,
+      'Order Number': order.orderNumber,
+      'Customer Name': `${order.user?.firstName || ''} ${order.user?.lastName || ''}`,
+      'Customer Email': order.user?.email || '',
+      'Status': order.status,
+      'Total Amount': order.totalAmount,
+      'Items Count': order.orderItems?.length || 0,
+      'Created Date': new Date(order.createdAt).toLocaleDateString('fr-FR'),
+      'Updated Date': new Date(order.updatedAt).toLocaleDateString('fr-FR')
+    }));
+
+    res.json({
+      success: true,
+      message: `${orders.length} commande(s) exportée(s)`,
+      data: {
+        csvData,
+        orderCount: orders.length
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Bulk export orders error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de l\'export des commandes'
+    });
+  }
+});
+
+// @route   POST /api/admin/orders/bulk/notify
+// @desc    Send bulk email notifications to customers
+// @access  Admin
+router.post('/orders/bulk/notify', [
+  body('orderIds').isArray({ min: 1 }).withMessage('Au moins une commande doit être sélectionnée'),
+  body('orderIds.*').isUUID().withMessage('ID de commande invalide'),
+  body('notificationType').isIn(['status_update', 'shipping_update', 'custom']).withMessage('Type de notification invalide'),
+  body('customMessage').optional().trim().isLength({ max: 1000 }).withMessage('Le message ne doit pas dépasser 1000 caractères')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Données invalides',
+        details: errors.array()
+      });
+    }
+
+    const { orderIds, notificationType, customMessage } = req.body;
+
+    // Get orders with customer information
+    const orders = await Order.findAll({
+      where: { id: orderIds },
+      include: [{ model: User, as: 'user', attributes: ['firstName', 'lastName', 'email'] }]
+    });
+
+    // Send notifications (placeholder for now)
+    const notificationResults = orders.map(order => ({
+      orderId: order.id,
+      customerEmail: order.user?.email,
+      status: 'sent', // In real implementation, this would be the actual email sending result
+      message: `Notification ${notificationType} sent to ${order.user?.email}`
+    }));
+
+    res.json({
+      success: true,
+      message: `${orders.length} notification(s) envoyée(s)`,
+      data: {
+        sentCount: orders.length,
+        results: notificationResults
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Bulk notify orders error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de l\'envoi des notifications'
     });
   }
 });

@@ -128,6 +128,7 @@ const categoryRoutes = require('./routes/categories');
 const paymentMethodRoutes = require('./routes/paymentMethods');
 const shippingAddressRoutes = require('./routes/shippingAddresses');
 const adminRoutes = require('./routes/admin');
+const analyticsRoutes = require('./routes/analytics');
 const { router: notificationRoutes, setNotificationService } = require('./routes/notifications');
 
 // Set notification service in routes
@@ -143,6 +144,7 @@ app.use('/api/categories', categoryRoutes);
 app.use('/api/payment-methods', paymentMethodRoutes);
 app.use('/api/shipping-addresses', shippingAddressRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/admin/analytics', analyticsRoutes);
 app.use('/api/notifications', notificationRoutes);
 
 // WebSocket connection handling
