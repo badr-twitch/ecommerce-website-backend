@@ -29,7 +29,7 @@ const Order = require('./Order');
 const OrderItem = require('./OrderItem');
 const Cart = require('./Cart');
 const CartItem = require('./CartItem');
-const Review = require('./Review');
+const Review = require('./Review')(sequelize); // Call the function with sequelize instance
 const StockHistory = require('./StockHistory');
 const Notification = require('./Notification');
 const NotificationPreference = require('./NotificationPreference');
@@ -40,6 +40,20 @@ Order.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
 User.hasMany(Review, { foreignKey: 'userId', as: 'reviews' });
 Review.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+// Wishlist association (User has many products through wishlist array)
+User.belongsToMany(Product, { 
+  through: 'UserWishlist', 
+  foreignKey: 'userId', 
+  otherKey: 'productId',
+  as: 'wishlistProducts'
+});
+Product.belongsToMany(User, { 
+  through: 'UserWishlist', 
+  foreignKey: 'productId', 
+  otherKey: 'userId',
+  as: 'wishlistedBy'
+});
 
 User.hasOne(Cart, { foreignKey: 'userId', as: 'cart' });
 Cart.belongsTo(User, { foreignKey: 'userId', as: 'user' });
