@@ -4,7 +4,8 @@ const Order = require('../models/Order');
 const OrderItem = require('../models/OrderItem');
 const Product = require('../models/Product');
 const User = require('../models/User');
-const { auth, adminAuth } = require('../middleware/auth');
+const { adminAuth } = require('../middleware/auth');
+const firebaseAuth = require('../middleware/firebaseAuth');
 
 const router = express.Router();
 
@@ -37,7 +38,11 @@ const generateOrderNumber = () => {
 // @route   GET /api/orders
 // @desc    Get user orders or all orders (admin)
 // @access  Private
-router.get('/', auth, [
+router.get('/', firebaseAuth, async (req, res, next) => {
+  console.log('🔍 Orders Route - Firebase user:', req.firebaseUser?.uid);
+  console.log('🔍 Orders Route - Database user:', req.user?.id);
+  next();
+}, [
   query('page').optional().isInt({ min: 1 }),
   query('limit').optional().isInt({ min: 1, max: 50 }),
   query('status').optional().isIn(['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded'])
@@ -60,8 +65,14 @@ router.get('/', auth, [
     const whereClause = {};
     
     // If not admin, only show user's orders
-    if (req.user.role !== 'admin') {
+    if (req.user && req.user.role !== 'admin') {
       whereClause.userId = req.user.id;
+    } else if (req.firebaseUser) {
+      // Use Firebase UID to find user in database
+      const user = await User.findOne({ where: { firebaseUid: req.firebaseUser.uid } });
+      if (user) {
+        whereClause.userId = user.id;
+      }
     }
 
     if (status) {
@@ -91,6 +102,7 @@ router.get('/', auth, [
     });
 
     res.json({
+      success: true,
       orders,
       pagination: {
         currentPage: parseInt(page),
@@ -111,15 +123,21 @@ router.get('/', auth, [
 // @route   GET /api/orders/:id
 // @desc    Get single order
 // @access  Private
-router.get('/:id', auth, async (req, res) => {
+router.get('/:id', firebaseAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
     const whereClause = { id };
     
     // If not admin, only show user's orders
-    if (req.user.role !== 'admin') {
+    if (req.user && req.user.role !== 'admin') {
       whereClause.userId = req.user.id;
+    } else if (req.firebaseUser) {
+      // Use Firebase UID to find user in database
+      const user = await User.findOne({ where: { firebaseUid: req.firebaseUser.uid } });
+      if (user) {
+        whereClause.userId = user.id;
+      }
     }
 
     const order = await Order.findOne({
@@ -145,7 +163,10 @@ router.get('/:id', auth, async (req, res) => {
       });
     }
 
-    res.json({ order });
+    res.json({ 
+      success: true, 
+      order 
+    });
 
   } catch (error) {
     console.error('Erreur lors de la récupération de la commande:', error);
@@ -158,7 +179,7 @@ router.get('/:id', auth, async (req, res) => {
 // @route   POST /api/orders
 // @desc    Create new order
 // @access  Private
-router.post('/', auth, [
+router.post('/', firebaseAuth, [
   body('items').isArray({ min: 1 }).withMessage('Au moins un produit est requis'),
   body('items.*.productId').isUUID().withMessage('ID de produit invalide'),
   body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantité invalide'),
@@ -242,10 +263,25 @@ router.post('/', auth, [
     const shippingAmount = subtotal > 50 ? 0 : 5.99; // Free shipping over €50
     const totalAmount = subtotal + taxAmount + shippingAmount;
 
+    // Get user from Firebase UID if not already set
+    let userId = req.user?.id;
+    if (!userId && req.firebaseUser) {
+      const user = await User.findOne({ where: { firebaseUid: req.firebaseUser.uid } });
+      if (user) {
+        userId = user.id;
+      }
+    }
+
+    if (!userId) {
+      return res.status(400).json({ 
+        error: 'Utilisateur non trouvé' 
+      });
+    }
+
     // Create order
     const order = await Order.create({
       orderNumber: generateOrderNumber(),
-      userId: req.user.id,
+      userId: userId,
       totalAmount,
       subtotal,
       taxAmount,
@@ -297,6 +333,7 @@ router.post('/', auth, [
     await safeNotify(notificationService.notifyNewOrder, order.id);
 
     res.status(201).json({
+      success: true,
       message: 'Commande créée avec succès',
       order: orderWithItems
     });
@@ -368,6 +405,7 @@ router.put('/:id/status', adminAuth, [
     }
 
     res.json({
+      success: true,
       message: 'Statut de la commande mis à jour avec succès',
       order: order.toJSON()
     });
@@ -383,13 +421,19 @@ router.put('/:id/status', adminAuth, [
 // @route   POST /api/orders/:id/cancel
 // @desc    Cancel order
 // @access  Private
-router.post('/:id/cancel', auth, async (req, res) => {
+router.post('/:id/cancel', firebaseAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
     const whereClause = { id };
-    if (req.user.role !== 'admin') {
+    if (req.user && req.user.role !== 'admin') {
       whereClause.userId = req.user.id;
+    } else if (req.firebaseUser) {
+      // Use Firebase UID to find user in database
+      const user = await User.findOne({ where: { firebaseUid: req.firebaseUser.uid } });
+      if (user) {
+        whereClause.userId = user.id;
+      }
     }
 
     const order = await Order.findOne({ where: whereClause });
@@ -429,6 +473,7 @@ router.post('/:id/cancel', auth, async (req, res) => {
     }
 
     res.json({
+      success: true,
       message: 'Commande annulée avec succès',
       order: order.toJSON()
     });

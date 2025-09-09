@@ -56,9 +56,13 @@ const firebaseAuth = async (req, res, next) => {
       where: { firebaseUid: decodedToken.uid } 
     });
 
-    // Add user to request object if found
+    console.log('🔍 Firebase Auth Middleware - User found in database:', !!user);
     if (user) {
+      console.log('🔍 Firebase Auth Middleware - User ID:', user.id);
+      console.log('🔍 Firebase Auth Middleware - User role:', user.role);
       req.user = user;
+    } else {
+      console.log('🔍 Firebase Auth Middleware - No user found in database for Firebase UID:', decodedToken.uid);
     }
     
     next();
