@@ -141,10 +141,10 @@ const createSampleOrders = async () => {
       const streetNumber = Math.floor(Math.random() * 200) + 1;
 
       // Generate realistic order amounts
-      const subtotal = Math.floor(Math.random() * 800) + 20; // €20-820
+      const subtotal = Math.floor(Math.random() * 8576) + 214; // 214-8790 DH (20-820 EUR)
       const taxAmount = Math.round(subtotal * 0.20 * 100) / 100; // 20% VAT
-      const shippingAmount = selectedShippingMethod === 'Express' ? 15 : 
-                           selectedShippingMethod === 'Chronopost' ? 25 : 0;
+      const shippingAmount = selectedShippingMethod === 'Express' ? 161 : 
+                           selectedShippingMethod === 'Chronopost' ? 268 : 0;
       const discountAmount = Math.random() < 0.15 ? Math.round(subtotal * 0.10 * 100) / 100 : 0; // 15% chance of 10% discount
       const totalAmount = subtotal + taxAmount + shippingAmount - discountAmount;
 
@@ -189,7 +189,7 @@ const createSampleOrders = async () => {
         taxAmount,
         shippingAmount,
         discountAmount,
-        currency: 'EUR',
+        currency: 'MAD',
         customerFirstName: firstName,
         customerLastName: lastName,
         customerEmail: `${firstName.toLowerCase()}.${lastName.toLowerCase()}@example.com`,

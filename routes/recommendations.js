@@ -12,7 +12,7 @@ const recommendationService = new RecommendationService();
  */
 router.get('/user', firebaseAuth, async (req, res) => {
   try {
-    const userId = req.user.uid;
+    const userId = req.firebaseUser.uid;
     const limit = parseInt(req.query.limit) || 10;
 
     const recommendations = await recommendationService.getUserRecommendations(userId, limit);

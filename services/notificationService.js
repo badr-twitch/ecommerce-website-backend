@@ -176,7 +176,7 @@ class NotificationService {
       await this.createNotification({
         type: 'order_new',
         title: `🆕 Nouvelle commande #${order.id}`,
-        message: `Commande de ${order.user.firstName} ${order.user.lastName} - ${totalAmount.toFixed(2)}€`,
+        message: `Commande de ${order.user.firstName} ${order.user.lastName} - ${totalAmount.toFixed(2)} DH`,
         priority: isHighValue ? 'high' : 'medium',
         data: {
           orderId: order.id,
@@ -192,7 +192,7 @@ class NotificationService {
         await this.createNotification({
           type: 'order_high_value',
           title: `💰 Commande haute valeur #${order.id}`,
-          message: `Commande de ${totalAmount.toFixed(2)}€ - ${order.user.firstName} ${order.user.lastName}`,
+          message: `Commande de ${totalAmount.toFixed(2)} DH - ${order.user.firstName} ${order.user.lastName}`,
           priority: 'critical',
           data: {
             orderId: order.id,

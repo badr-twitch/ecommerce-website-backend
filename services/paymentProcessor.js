@@ -90,7 +90,7 @@ class PaymentProcessorService {
   }
 
   // Process a payment (for actual purchases)
-  async processPayment(paymentMethodId, amount, currency = 'EUR') {
+  async processPayment(paymentMethodId, amount, currency = 'MAD') {
     try {
       // In production, this would make a real payment API call
       const payment = await this.callPaymentProcessorAPI({

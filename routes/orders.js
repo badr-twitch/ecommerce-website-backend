@@ -260,7 +260,7 @@ router.post('/', firebaseAuth, [
 
     // Calculate taxes and shipping (simplified)
     const taxAmount = subtotal * 0.20; // 20% VAT for France
-    const shippingAmount = subtotal > 50 ? 0 : 5.99; // Free shipping over €50
+    const shippingAmount = subtotal > 536 ? 0 : 64.2; // Free shipping over 536 DH (50 EUR)
     const totalAmount = subtotal + taxAmount + shippingAmount;
 
     // Get user from Firebase UID if not already set

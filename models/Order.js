@@ -63,11 +63,11 @@ const Order = sequelize.define('Order', {
       min: 0
     }
   },
-  currency: {
-    type: DataTypes.STRING,
-    defaultValue: 'EUR',
-    allowNull: false
-  },
+    currency: {
+      type: DataTypes.STRING,
+      defaultValue: 'MAD',
+      allowNull: false
+    },
   // Customer information
   customerFirstName: {
     type: DataTypes.STRING,

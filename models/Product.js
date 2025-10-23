@@ -44,11 +44,11 @@ const Product = sequelize.define('Product', {
       min: 0
     }
   },
-  currency: {
-    type: DataTypes.STRING,
-    defaultValue: 'EUR',
-    allowNull: false
-  },
+    currency: {
+      type: DataTypes.STRING,
+      defaultValue: 'MAD',
+      allowNull: false
+    },
   sku: {
     type: DataTypes.STRING,
     unique: true,
@@ -137,6 +137,30 @@ const Product = sequelize.define('Product', {
     validate: {
       min: 0,
       max: 100
+    }
+  },
+  saleStartDate: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    comment: 'Start date for the sale promotion',
+    set(value) {
+      if (value === '' || value === 'Invalid date' || value === null || value === undefined) {
+        this.setDataValue('saleStartDate', null);
+      } else {
+        this.setDataValue('saleStartDate', value);
+      }
+    }
+  },
+  saleEndDate: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    comment: 'End date for the sale promotion',
+    set(value) {
+      if (value === '' || value === 'Invalid date' || value === null || value === undefined) {
+        this.setDataValue('saleEndDate', null);
+      } else {
+        this.setDataValue('saleEndDate', value);
+      }
     }
   },
   brand: {

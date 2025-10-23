@@ -348,7 +348,31 @@ router.put('/products/:id', [
     }
 
     console.log('🔍 Updating product with data:', req.body);
-    await product.update(req.body);
+    
+    // Clean up date fields - convert empty strings to null
+    const updateData = { ...req.body };
+    if (updateData.saleStartDate === '' || updateData.saleStartDate === 'Invalid date') {
+      updateData.saleStartDate = null;
+    }
+    if (updateData.saleEndDate === '' || updateData.saleEndDate === 'Invalid date') {
+      updateData.saleEndDate = null;
+    }
+    
+    // Validate dates if they exist
+    if (updateData.saleStartDate && isNaN(new Date(updateData.saleStartDate).getTime())) {
+      return res.status(400).json({
+        success: false,
+        error: 'Date de début de promotion invalide'
+      });
+    }
+    if (updateData.saleEndDate && isNaN(new Date(updateData.saleEndDate).getTime())) {
+      return res.status(400).json({
+        success: false,
+        error: 'Date de fin de promotion invalide'
+      });
+    }
+    
+    await product.update(updateData);
     console.log('✅ Product updated successfully');
 
     // Get updated product with category
