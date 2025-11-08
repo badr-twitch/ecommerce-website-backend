@@ -241,7 +241,14 @@ router.post('/login', [
 // @access  Private
 router.get('/me', firebaseAuth, async (req, res) => {
   try {
-    const user = await User.findByPk(req.firebaseUser.uid);
+    let user = req.user;
+
+    if (!user && req.firebaseUser?.uid) {
+      user = await User.findOne({
+        where: { firebaseUid: req.firebaseUser.uid }
+      });
+    }
+
     if (!user) {
       return res.status(404).json({ 
         success: false,

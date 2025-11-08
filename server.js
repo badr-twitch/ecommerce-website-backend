@@ -132,6 +132,7 @@ const analyticsRoutes = require('./routes/analytics');
 const reviewRoutes = require('./routes/reviews');
 const recommendationRoutes = require('./routes/recommendations');
 const { router: notificationRoutes, setNotificationService } = require('./routes/notifications');
+const membershipRoutes = require('./routes/membership');
 
 // Set notification service in routes
 setNotificationService(notificationService);
@@ -150,6 +151,7 @@ app.use('/api/admin/analytics', analyticsRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/recommendations', recommendationRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/membership', membershipRoutes);
 
 // WebSocket connection handling
 io.on('connection', (socket) => {

@@ -121,6 +121,52 @@ const User = sequelize.define('User', {
     allowNull: true,
     defaultValue: {},
     comment: 'Global notification settings like globalSounds'
+  },
+  membershipStatus: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    defaultValue: 'none',
+    validate: {
+      isIn: [['none', 'active', 'cancelled', 'expired', 'pending']]
+    },
+    comment: 'Status of paid membership'
+  },
+  membershipPlan: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    comment: 'Current membership plan identifier'
+  },
+  membershipPrice: {
+    type: DataTypes.DECIMAL(10, 2),
+    allowNull: true,
+    comment: 'Membership price at time of subscription'
+  },
+  membershipCurrency: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: 'MAD',
+    comment: 'Currency used for membership billing'
+  },
+  membershipActivatedAt: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    comment: 'Membership activation date'
+  },
+  membershipExpiresAt: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    comment: 'Membership expiration date'
+  },
+  membershipAutoRenew: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: true,
+    comment: 'Whether membership renews automatically'
+  },
+  membershipBenefitsSnapshot: {
+    type: DataTypes.JSONB,
+    allowNull: true,
+    comment: 'Snapshot of benefits at time of subscription'
   }
 }, {
   tableName: 'users',
