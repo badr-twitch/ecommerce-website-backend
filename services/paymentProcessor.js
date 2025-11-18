@@ -58,18 +58,25 @@ class PaymentProcessorService {
 
   // Detect card brand based on number
   detectCardBrand(cardNumber) {
+    if (!cardNumber) {
+      return 'unknown';
+    }
+
     const number = cardNumber.replace(/\s/g, '');
-    
+
     if (/^4/.test(number)) return 'visa';
     if (/^5[1-5]/.test(number)) return 'mastercard';
     if (/^3[47]/.test(number)) return 'amex';
     if (/^6/.test(number)) return 'discover';
-    
+
     return 'unknown';
   }
 
   // Simulate payment processor API call
   async callPaymentProcessorAPI(cardData) {
+    if (!cardData?.cardNumber) {
+      throw new Error('Card number is required to create a payment method');
+    }
     // In production, this would be a real API call
     // For now, we'll simulate the response
     
@@ -90,26 +97,31 @@ class PaymentProcessorService {
   }
 
   // Process a payment (for actual purchases)
-  async processPayment(paymentMethodId, amount, currency = 'MAD') {
-    try {
-      // In production, this would make a real payment API call
-      const payment = await this.callPaymentProcessorAPI({
-        paymentMethodId,
-        amount,
-        currency
-      });
-      
-      return {
-        success: true,
-        transactionId: `txn_${Date.now()}`,
-        amount,
-        currency,
-        status: 'succeeded'
-      };
-    } catch (error) {
-      console.error('Payment processing error:', error);
-      throw new Error('Erreur lors du traitement du paiement');
+  async processPayment(paymentMethodId, amount, currency = 'MAD', metadata = {}) {
+    if (!paymentMethodId) {
+      throw new Error('Identifiant de méthode de paiement manquant');
     }
+
+    if (!amount || Number(amount) <= 0) {
+      throw new Error('Montant de paiement invalide');
+    }
+
+    const normalizedAmount = Number(amount);
+
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        resolve({
+          success: true,
+          transactionId: `txn_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`,
+          amount: normalizedAmount,
+          currency,
+          status: 'succeeded',
+          paymentMethodId,
+          processedAt: new Date().toISOString(),
+          metadata,
+        });
+      }, 600);
+    });
   }
 
   // Delete a payment method from the processor

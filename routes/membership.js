@@ -2,7 +2,9 @@ const express = require('express');
 const { Op } = require('sequelize');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const User = require('../models/User');
+const PaymentMethod = require('../models/PaymentMethod');
 const membershipPlan = require('../config/membershipPlan');
+const paymentProcessor = require('../services/paymentProcessor');
 
 const router = express.Router();
 
@@ -87,7 +89,73 @@ router.post('/subscribe', firebaseAuth, async (req, res) => {
       });
     }
 
-    const autoRenew = req.body?.autoRenew ?? true;
+    if (user.membershipStatus === 'active') {
+      return res.status(400).json({
+        success: false,
+        error: 'Un abonnement UMOD Prime est déjà actif sur ce compte.',
+      });
+    }
+
+    const { paymentMethodId, autoRenew = true } = req.body || {};
+
+    let paymentMethod = null;
+
+    if (paymentMethodId) {
+      paymentMethod = await PaymentMethod.findOne({
+        where: {
+          id: paymentMethodId,
+          userId: user.id,
+          isActive: true,
+        },
+      });
+
+      if (!paymentMethod) {
+        return res.status(400).json({
+          success: false,
+          error: 'Méthode de paiement invalide ou introuvable.',
+        });
+      }
+    } else {
+      paymentMethod = await PaymentMethod.findOne({
+        where: {
+          userId: user.id,
+          isActive: true,
+          isDefault: true,
+        },
+      });
+
+      if (!paymentMethod) {
+        paymentMethod = await PaymentMethod.findOne({
+          where: {
+            userId: user.id,
+            isActive: true,
+          },
+          order: [['createdAt', 'DESC']],
+        });
+      }
+
+      if (!paymentMethod) {
+        return res.status(400).json({
+          success: false,
+          error: 'Ajoutez une méthode de paiement pour activer UMOD Prime.',
+        });
+      }
+    }
+
+    let paymentResult;
+    try {
+      paymentResult = await paymentProcessor.processPayment(
+        paymentMethod.processorId || paymentMethod.id,
+        membershipPlan.price,
+        membershipPlan.currency,
+      );
+    } catch (paymentError) {
+      console.error('❌ Membership payment error:', paymentError);
+      return res.status(402).json({
+        success: false,
+        error: paymentError.message || 'Le paiement de l’abonnement a échoué. Merci de réessayer.',
+      });
+    }
 
     const activationDate = new Date();
     const expirationDate = new Date(
@@ -105,6 +173,13 @@ router.post('/subscribe', firebaseAuth, async (req, res) => {
       perks: membershipPlan.perks,
       bonuses: membershipPlan.bonuses,
       highlight: membershipPlan.highlight,
+      chargedPaymentMethod: {
+        id: paymentMethod.id,
+        last4: paymentMethod.last4,
+        brand: paymentMethod.brand,
+        cardholderName: paymentMethod.cardholderName,
+      },
+      lastTransaction: paymentResult,
     };
 
     await user.save();
@@ -120,6 +195,12 @@ router.post('/subscribe', firebaseAuth, async (req, res) => {
         membershipAutoRenew: user.membershipAutoRenew,
         membershipPrice: user.membershipPrice,
         membershipCurrency: user.membershipCurrency,
+        chargedPaymentMethod: {
+          id: paymentMethod.id,
+          last4: paymentMethod.last4,
+          brand: paymentMethod.brand,
+        },
+        payment: paymentResult,
       },
     });
   } catch (error) {

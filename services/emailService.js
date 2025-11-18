@@ -1,37 +1,25 @@
-const nodemailer = require('nodemailer');
+const sgMail = require('@sendgrid/mail');
 const fs = require('fs').promises;
 const path = require('path');
 
 class EmailService {
   constructor() {
-    // Check if email configuration is available
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-      console.warn('⚠️ Email configuration missing. Email service will be disabled.');
-      this.transporter = null;
+    // Check if SendGrid API key is available
+    if (!process.env.SENDGRID_API_KEY) {
+      console.warn('⚠️ SendGrid API key missing. Email service will be disabled.');
       this.enabled = false;
       return;
     }
 
-    // Create transporter (configure with your email service)
+    // Initialize SendGrid
     try {
-      this.transporter = nodemailer.createTransport({
-        host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-        port: process.env.EMAIL_PORT || 587,
-        secure: false, // true for 465, false for other ports
-        auth: {
-          user: process.env.EMAIL_USER,
-          pass: process.env.EMAIL_PASS
-        },
-        // Outlook-friendly settings
-        tls: {
-          rejectUnauthorized: false
-        }
-      });
+      sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+      this.fromEmail = process.env.SENDGRID_FROM_EMAIL || 'noreply@umod.ma';
+      this.fromName = process.env.SENDGRID_FROM_NAME || 'UMOD';
       this.enabled = true;
-      console.log('✅ Email service initialized successfully');
+      console.log('✅ SendGrid email service initialized successfully');
     } catch (error) {
-      console.error('❌ Error initializing email service:', error);
-      this.transporter = null;
+      console.error('❌ Error initializing SendGrid email service:', error);
       this.enabled = false;
     }
   }
@@ -57,7 +45,7 @@ class EmailService {
 
   // Send account deletion verification email
   async sendDeleteVerificationEmail(userEmail, userName, verificationCode) {
-    if (!this.enabled || !this.transporter) {
+    if (!this.enabled) {
       console.warn('⚠️ Email service is disabled. Skipping email send.');
       return { success: true, messageId: 'email-disabled' };
     }
@@ -69,17 +57,20 @@ class EmailService {
         verificationCode: verificationCode
       });
 
-      const mailOptions = {
-        from: `"UMOD" <${process.env.EMAIL_USER}>`,
+      const msg = {
         to: userEmail,
+        from: {
+          email: this.fromEmail,
+          name: this.fromName
+        },
         subject: '🔐 Confirmation de suppression de compte - UMOD',
         html: htmlContent,
         text: this.generateTextVersion(userName, verificationCode)
       };
 
-      const result = await this.transporter.sendMail(mailOptions);
-      console.log('✅ Delete verification email sent successfully:', result.messageId);
-      return { success: true, messageId: result.messageId };
+      const result = await sgMail.send(msg);
+      console.log('✅ Delete verification email sent successfully:', result[0]?.headers['x-message-id']);
+      return { success: true, messageId: result[0]?.headers['x-message-id'] || 'sent' };
     } catch (error) {
       console.error('❌ Error sending delete verification email:', error);
       // Don't throw error, just log it and return success to not break the flow
@@ -118,7 +109,7 @@ Pour toute question, contactez-nous à support@umod.fr
 
   // Send current phone number verification email
   async sendPhoneVerificationEmail(userEmail, userName, verificationCode, currentPhoneNumber) {
-    if (!this.enabled || !this.transporter) {
+    if (!this.enabled) {
       console.warn('⚠️ Email service is disabled. Skipping email send.');
       return { success: true, messageId: 'email-disabled' };
     }
@@ -131,23 +122,26 @@ Pour toute question, contactez-nous à support@umod.fr
         currentPhoneNumber: currentPhoneNumber
       });
 
-      const mailOptions = {
-        from: `"UMOD" <${process.env.EMAIL_USER}>`,
+      const msg = {
         to: userEmail,
+        from: {
+          email: this.fromEmail,
+          name: this.fromName
+        },
         subject: '📱 Vérification de votre numéro de téléphone - UMOD',
         html: htmlContent,
         text: this.generatePhoneVerificationTextVersion(userName, verificationCode, currentPhoneNumber)
       };
 
-      const result = await this.transporter.sendMail(mailOptions);
-      console.log('✅ Phone verification email sent successfully:', result.messageId);
+      const result = await sgMail.send(msg);
+      console.log('✅ Phone verification email sent successfully:', result[0]?.headers['x-message-id']);
       console.log('📧 Email details:', {
-        from: mailOptions.from,
-        to: mailOptions.to,
-        subject: mailOptions.subject,
-        messageId: result.messageId
+        from: msg.from,
+        to: msg.to,
+        subject: msg.subject,
+        messageId: result[0]?.headers['x-message-id']
       });
-      return { success: true, messageId: result.messageId };
+      return { success: true, messageId: result[0]?.headers['x-message-id'] || 'sent' };
     } catch (error) {
       console.error('❌ Error sending phone verification email:', error);
       return { success: true, messageId: 'email-error' };
@@ -156,7 +150,7 @@ Pour toute question, contactez-nous à support@umod.fr
 
   // Send phone number change verification email
   async sendPhoneChangeVerificationEmail(userEmail, userName, verificationCode, newPhoneNumber) {
-    if (!this.enabled || !this.transporter) {
+    if (!this.enabled) {
       console.warn('⚠️ Email service is disabled. Skipping email send.');
       return { success: true, messageId: 'email-disabled' };
     }
@@ -169,21 +163,166 @@ Pour toute question, contactez-nous à support@umod.fr
         newPhoneNumber: newPhoneNumber
       });
 
-      const mailOptions = {
-        from: `"UMOD" <${process.env.EMAIL_USER}>`,
+      const msg = {
         to: userEmail,
+        from: {
+          email: this.fromEmail,
+          name: this.fromName
+        },
         subject: '📱 Vérification du changement de numéro de téléphone - UMOD',
         html: htmlContent,
         text: this.generatePhoneChangeTextVersion(userName, verificationCode, newPhoneNumber)
       };
 
-      const result = await this.transporter.sendMail(mailOptions);
-      console.log('✅ Phone change verification email sent successfully:', result.messageId);
-      return { success: true, messageId: result.messageId };
+      const result = await sgMail.send(msg);
+      console.log('✅ Phone change verification email sent successfully:', result[0]?.headers['x-message-id']);
+      return { success: true, messageId: result[0]?.headers['x-message-id'] || 'sent' };
     } catch (error) {
       console.error('❌ Error sending phone change verification email:', error);
       return { success: true, messageId: 'email-error' };
     }
+  }
+
+  // Send password reset email
+  async sendPasswordResetEmail(userEmail, userName, resetToken, resetUrl) {
+    if (!this.enabled) {
+      console.warn('⚠️ Email service is disabled. Skipping email send.');
+      return { success: true, messageId: 'email-disabled' };
+    }
+
+    try {
+      const htmlContent = await this.loadTemplate('passwordResetEmail', {
+        userName: userName,
+        userEmail: userEmail,
+        resetUrl: resetUrl,
+        resetToken: resetToken
+      });
+
+      const msg = {
+        to: userEmail,
+        from: {
+          email: this.fromEmail,
+          name: this.fromName
+        },
+        subject: '🔐 Réinitialisation de votre mot de passe - UMOD',
+        html: htmlContent,
+        text: this.generatePasswordResetTextVersion(userName, resetUrl)
+      };
+
+      const result = await sgMail.send(msg);
+      console.log('✅ Password reset email sent successfully:', result[0]?.headers['x-message-id']);
+      return { success: true, messageId: result[0]?.headers['x-message-id'] || 'sent' };
+    } catch (error) {
+      console.error('❌ Error sending password reset email:', error);
+      console.error('❌ SendGrid error details:', {
+        code: error.code,
+        message: error.message,
+        response: error.response?.body,
+        errors: error.response?.body?.errors
+      });
+      
+      // Provide helpful error messages
+      if (error.code === 403) {
+        console.error('⚠️ SendGrid 403 Forbidden - Common causes:');
+        console.error('   1. API key is invalid or missing Mail Send permissions');
+        console.error('   2. From email address is not verified in SendGrid');
+        console.error('   3. API key is restricted and doesn\'t allow this operation');
+        console.error('   Check your SendGrid dashboard: https://app.sendgrid.com/');
+      }
+      
+      return { success: false, messageId: 'email-error', error: error.message };
+    }
+  }
+
+  // Generate text version of password reset email
+  generatePasswordResetTextVersion(userName, resetUrl) {
+    return `
+Réinitialisation de votre mot de passe - UMOD
+
+Bonjour ${userName},
+
+Nous avons reçu une demande de réinitialisation de votre mot de passe.
+Pour créer un nouveau mot de passe, cliquez sur le lien ci-dessous :
+
+${resetUrl}
+
+⚠️ IMPORTANT:
+- Ce lien expire dans 1 heure
+- Si vous n'avez pas demandé cette réinitialisation, ignorez cet email
+- Votre mot de passe actuel restera valide si vous n'utilisez pas ce lien
+
+Pour toute question, contactez-nous à support@umod.ma
+
+© 2024 UMOD. Tous droits réservés.
+    `.trim();
+  }
+
+  // Send email verification email
+  async sendEmailVerificationEmail(userEmail, userName, verificationToken, verificationUrl) {
+    if (!this.enabled) {
+      console.warn('⚠️ Email service is disabled. Skipping email send.');
+      return { success: true, messageId: 'email-disabled' };
+    }
+
+    try {
+      const htmlContent = await this.loadTemplate('emailVerification', {
+        userName: userName,
+        userEmail: userEmail,
+        verificationUrl: verificationUrl,
+        verificationToken: verificationToken
+      });
+
+      const msg = {
+        to: userEmail,
+        from: {
+          email: this.fromEmail,
+          name: this.fromName
+        },
+        subject: '✉️ Vérifiez votre adresse email - UMOD',
+        html: htmlContent,
+        text: this.generateEmailVerificationTextVersion(userName, verificationUrl)
+      };
+
+      const result = await sgMail.send(msg);
+      console.log('✅ Email verification sent successfully:', result[0]?.headers['x-message-id']);
+      return { success: true, messageId: result[0]?.headers['x-message-id'] || 'sent' };
+    } catch (error) {
+      console.error('❌ Error sending email verification:', error);
+      console.error('❌ SendGrid error details:', {
+        code: error.code,
+        message: error.message,
+        response: error.response?.body,
+        errors: error.response?.body?.errors
+      });
+      
+      if (error.code === 403) {
+        console.error('⚠️ SendGrid 403 Forbidden - Check API key permissions and verified sender');
+      }
+      
+      return { success: false, messageId: 'email-error', error: error.message };
+    }
+  }
+
+  // Generate text version of email verification
+  generateEmailVerificationTextVersion(userName, verificationUrl) {
+    return `
+Vérification de votre adresse email - UMOD
+
+Bonjour ${userName},
+
+Merci de vous être inscrit sur UMOD !
+Pour activer votre compte, veuillez vérifier votre adresse email en cliquant sur le lien ci-dessous :
+
+${verificationUrl}
+
+⚠️ IMPORTANT:
+- Ce lien expire dans 24 heures
+- Si vous n'avez pas créé de compte, ignorez cet email
+
+Pour toute question, contactez-nous à support@umod.ma
+
+© 2024 UMOD. Tous droits réservés.
+    `.trim();
   }
 
   // Generate text version of the current phone verification email
@@ -236,15 +375,18 @@ Pour toute question, contactez-nous à support@umod.fr
 
   // Test email configuration
   async testConnection() {
-    if (!this.enabled || !this.transporter) {
+    if (!this.enabled) {
       console.warn('⚠️ Email service is disabled');
       return false;
     }
 
     try {
-      await this.transporter.verify();
-      console.log('✅ Email service configured successfully');
-      return true;
+      // SendGrid doesn't have a verify method, so we'll just check if API key is set
+      if (process.env.SENDGRID_API_KEY) {
+        console.log('✅ SendGrid email service configured successfully');
+        return true;
+      }
+      return false;
     } catch (error) {
       console.error('❌ Email service configuration error:', error);
       return false;

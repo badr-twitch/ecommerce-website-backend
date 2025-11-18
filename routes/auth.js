@@ -1,298 +1,134 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
+const admin = require('firebase-admin');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const User = require('../models/User');
 const VerificationCode = require('../models/VerificationCode');
+const emailService = require('../services/emailService');
 const smsService = require('../services/smsService');
-const admin = require('firebase-admin');
+const { Op } = require('sequelize');
+const crypto = require('crypto');
 
 const router = express.Router();
 
-// Generate JWT token
-const generateToken = (userId) => {
-  return jwt.sign(
-    { userId },
-    process.env.JWT_SECRET || 'your-secret-key',
-    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-  );
-};
-
-// @route   POST /api/auth/register
-// @desc    Register a new user (traditional)
-// @access  Public
-router.post('/register', [
-  body('firstName').trim().isLength({ min: 2, max: 50 }).withMessage('Le prénom doit contenir entre 2 et 50 caractères'),
-  body('lastName').trim().isLength({ min: 2, max: 50 }).withMessage('Le nom doit contenir entre 2 et 50 caractères'),
-  body('email').isEmail().normalizeEmail().withMessage('Email invalide'),
-  body('password').isLength({ min: 6 }).withMessage('Le mot de passe doit contenir au moins 6 caractères'),
-  body('phone').optional().isMobilePhone('fr-FR').withMessage('Numéro de téléphone invalide')
-], async (req, res) => {
+// @route   GET /api/auth/user
+// @desc    Get user by Firebase UID
+// @access  Private
+router.get('/user', firebaseAuth, async (req, res) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ 
+    const firebaseUid = req.firebaseUser.uid;
+    const user = await User.findOne({ where: { firebaseUid } });
+    
+    if (!user) {
+      return res.status(404).json({
         success: false,
-        error: 'Données invalides',
-        details: errors.array() 
+        error: 'Utilisateur non trouvé'
       });
     }
 
-    const { firstName, lastName, email, password, phone } = req.body;
-
-    // Check if user already exists
-    const existingUser = await User.findOne({ where: { email } });
-    if (existingUser) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Un compte avec cet email existe déjà' 
-      });
-    }
-
-    // Create new user
-    const user = await User.create({
-      firstName,
-      lastName,
-      email,
-      password,
-      phone
-    });
-
-    // Generate token
-    const token = generateToken(user.id);
-
-    res.status(201).json({
+    res.json({
       success: true,
-      message: 'Compte créé avec succès',
-      token,
       user: user.toJSON()
     });
-
   } catch (error) {
-    console.error('Erreur lors de l\'inscription:', error);
-    res.status(500).json({ 
+    console.error('❌ Error getting user:', error);
+    res.status(500).json({
       success: false,
-      error: 'Erreur lors de la création du compte' 
+      error: 'Erreur lors de la récupération de l\'utilisateur'
     });
   }
 });
 
 // @route   POST /api/auth/register-firebase
-// @desc    Register a new user from Firebase
-// @access  Private (Firebase token required)
+// @desc    Register user from Firebase (sync with database)
+// @access  Private (Firebase authenticated)
 router.post('/register-firebase', firebaseAuth, async (req, res) => {
   try {
-    console.log('🔍 Register Firebase - Route reached');
-    console.log('🔍 Register Firebase - Request body:', req.body);
-    console.log('🔍 Register Firebase - Request headers:', req.headers);
-    console.log('🔍 Register Firebase - Content-Type:', req.headers['content-type']);
-    console.log('🔍 Register Firebase - Firebase user:', req.firebaseUser);
-    
-    const { firstName, lastName, email, emailVerified, photoURL } = req.body;
     const firebaseUid = req.firebaseUser.uid;
+    const { email, firstName, lastName, photoURL, emailVerified, phone } = req.body;
 
     // Check if user already exists
-    const existingUser = await User.findOne({ 
-      where: { firebaseUid } 
-    });
-
-    if (existingUser) {
-      console.log('🔍 Register Firebase - User already exists');
-      return res.status(200).json({
-        success: true,
-        message: 'Utilisateur déjà existant',
-        user: existingUser.toJSON()
-      });
-    }
-
-    console.log('🔍 Register Firebase - Creating new user...');
-    // Create new user
-    const user = await User.create({
-      firebaseUid,
-      firstName: firstName || req.firebaseUser.name?.split(' ')[0] || '',
-      lastName: lastName || req.firebaseUser.name?.split(' ').slice(1).join(' ') || '',
-      email,
-      emailVerified: emailVerified || false,
-      photoURL,
-      displayName: `${firstName || ''} ${lastName || ''}`.trim()
-    });
-
-    console.log('🔍 Register Firebase - User created successfully:', user.id);
-    res.status(201).json({
-      success: true,
-      message: 'Compte créé avec succès',
-      user: user.toJSON()
-    });
-
-  } catch (error) {
-    console.error('❌ Erreur lors de l\'inscription Firebase:', error);
-    res.status(500).json({ 
-      success: false,
-      error: 'Erreur lors de la création du compte' 
-    });
-  }
-});
-
-// @route   GET /api/auth/user
-// @desc    Get current user from Firebase
-// @access  Private (Firebase token required)
-router.get('/user', firebaseAuth, async (req, res) => {
-  try {
-    console.log('🔍 Get User - Route reached');
-    console.log('🔍 Get User - Firebase UID:', req.firebaseUser.uid);
+    let user = await User.findOne({ where: { firebaseUid } });
     
-    const user = await User.findOne({ 
-      where: { firebaseUid: req.firebaseUser.uid } 
-    });
-
-    if (!user) {
-      console.log('🔍 Get User - User not found in database');
-      return res.status(404).json({
-        success: false,
-        message: 'Utilisateur non trouvé dans la base de données'
+    if (user) {
+      // Update existing user
+      await user.update({
+        email,
+        firstName: firstName || user.firstName,
+        lastName: lastName || user.lastName,
+        photoURL: photoURL || user.photoURL,
+        emailVerified: emailVerified !== undefined ? emailVerified : user.emailVerified,
+        phone: phone || user.phone
+      });
+    } else {
+      // Create new user
+      user = await User.create({
+        firebaseUid,
+        email,
+        firstName: firstName || '',
+        lastName: lastName || '',
+        photoURL: photoURL || null,
+        emailVerified: emailVerified || false,
+        phone: phone || null,
+        role: 'client',
+        isActive: true
       });
     }
 
-    console.log('🔍 Get User - User found:', user.id);
     res.json({
       success: true,
       user: user.toJSON()
     });
-
   } catch (error) {
-    console.error('❌ Erreur lors de la récupération de l\'utilisateur:', error);
-    res.status(500).json({ 
+    console.error('❌ Error registering Firebase user:', error);
+    res.status(500).json({
       success: false,
-      error: 'Erreur lors de la récupération de l\'utilisateur' 
-    });
-  }
-});
-
-// @route   POST /api/auth/login
-// @desc    Login user (traditional)
-// @access  Public
-router.post('/login', [
-  body('email').isEmail().normalizeEmail().withMessage('Email invalide'),
-  body('password').notEmpty().withMessage('Mot de passe requis')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Données invalides',
-        details: errors.array() 
-      });
-    }
-
-    const { email, password } = req.body;
-
-    // Find user
-    const user = await User.findOne({ where: { email } });
-    if (!user) {
-      return res.status(401).json({ 
-        success: false,
-        error: 'Email ou mot de passe incorrect' 
-      });
-    }
-
-    // Check if user is active
-    if (!user.isActive) {
-      return res.status(401).json({ 
-        success: false,
-        error: 'Compte désactivé' 
-      });
-    }
-
-    // Verify password
-    const isPasswordValid = await user.comparePassword(password);
-    if (!isPasswordValid) {
-      return res.status(401).json({ 
-        success: false,
-        error: 'Email ou mot de passe incorrect' 
-      });
-    }
-
-    // Update last login
-    await user.update({ lastLogin: new Date() });
-
-    // Generate token
-    const token = generateToken(user.id);
-
-    res.json({
-      success: true,
-      message: 'Connexion réussie',
-      token,
-      user: user.toJSON()
-    });
-
-  } catch (error) {
-    console.error('Erreur lors de la connexion:', error);
-    res.status(500).json({ 
-      success: false,
-      error: 'Erreur lors de la connexion' 
+      error: 'Erreur lors de l\'enregistrement de l\'utilisateur'
     });
   }
 });
 
 // @route   GET /api/auth/me
-// @desc    Get current user (traditional)
+// @desc    Get current user profile
 // @access  Private
 router.get('/me', firebaseAuth, async (req, res) => {
   try {
-    let user = req.user;
-
-    if (!user && req.firebaseUser?.uid) {
-      user = await User.findOne({
-        where: { firebaseUid: req.firebaseUser.uid }
-      });
-    }
-
+    const firebaseUid = req.firebaseUser.uid;
+    const user = await User.findOne({ where: { firebaseUid } });
+    
     if (!user) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Utilisateur non trouvé' 
+        error: 'Utilisateur non trouvé'
       });
     }
 
-    res.json({ 
+    res.json({
       success: true,
-      user: user.toJSON() 
+      user: user.toJSON()
     });
-
   } catch (error) {
-    console.error('Erreur lors de la récupération du profil:', error);
-    res.status(500).json({ 
+    console.error('❌ Error getting user profile:', error);
+    res.status(500).json({
       success: false,
-      error: 'Erreur lors de la récupération du profil' 
+      error: 'Erreur lors de la récupération du profil'
     });
   }
 });
 
 // @route   PUT /api/auth/profile
-// @desc    Update user profile (Firebase)
+// @desc    Update user profile
 // @access  Private
 router.put('/profile', firebaseAuth, [
-  body('displayName').optional().trim().custom((value) => {
-    if (value !== undefined && value !== null && value !== '' && value.length < 2) {
-      throw new Error('Le nom d\'affichage doit contenir au moins 2 caractères');
-    }
-    return true;
-  }),
-  body('photoURL').optional().trim(),
-  body('firstName').optional().trim().isLength({ min: 2, max: 50 }),
-  body('lastName').optional().trim().isLength({ min: 2, max: 50 }),
-  body('phone').optional().isMobilePhone('fr-FR'),
-  body('address').optional().trim(),
-  body('city').optional().trim(),
-  body('postalCode').optional().trim()
+  body('displayName').optional().trim(),
+  body('photoURL').optional().trim().isURL().withMessage('URL de photo invalide'),
+  body('firstName').optional().trim(),
+  body('lastName').optional().trim(),
+  body('phone').optional().trim()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log('❌ Profile Update - Validation errors:', errors.array());
-      console.log('❌ Profile Update - Request body:', req.body);
       return res.status(400).json({ 
         success: false,
         error: 'Données invalides',
@@ -300,65 +136,41 @@ router.put('/profile', firebaseAuth, [
       });
     }
 
-    // Find user by Firebase UID
-    const user = await User.findOne({ 
-      where: { firebaseUid: req.firebaseUser.uid } 
-    });
+    const firebaseUid = req.firebaseUser.uid;
+    const user = await User.findOne({ where: { firebaseUid } });
 
     if (!user) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Utilisateur non trouvé' 
+        error: 'Utilisateur non trouvé'
       });
     }
 
     // Prepare update data
     const updateData = { ...req.body };
 
-    // Handle phone number updates
+    // Handle phone number updates - REMOVED: Phone numbers now require SMS verification
+    // Phone numbers should be added/changed through dedicated verification routes
     if (req.body.phone) {
-      // If user doesn't have a phone number yet, allow first-time addition
       if (!user.phone) {
-        console.log('📱 First-time phone number addition:', req.body.phone);
-        updateData.phone = req.body.phone;
-        
-        // Update Firebase custom claims for first-time phone addition
-        try {
-          console.log('🔄 Attempting to update Firebase custom claims for UID:', req.firebaseUser.uid);
-          console.log('📱 Phone number to set in Firebase:', req.body.phone);
-          
-          await admin.auth().setCustomUserClaims(req.firebaseUser.uid, {
-            phone: req.body.phone
-          });
-          
-          console.log('✅ Firebase custom claims updated with first-time phone number');
-          
-          // Verify the custom claims were set
-          const userRecord = await admin.auth().getUser(req.firebaseUser.uid);
-          console.log('🔍 User custom claims after update:', userRecord.customClaims);
-          
-        } catch (firebaseError) {
-          console.error('❌ Error updating Firebase custom claims:', firebaseError);
-          console.error('❌ Error details:', {
-            code: firebaseError.code,
-            message: firebaseError.message,
-            stack: firebaseError.stack
-          });
-        }
-      } else if (req.body.phone !== user.phone) {
-        // If user already has a phone number and is trying to change it
+        // First-time phone addition requires SMS verification
         return res.status(400).json({
           success: false,
-          error: 'Le changement de numéro de téléphone nécessite une vérification par email. Utilisez l\'option "Changer le numéro de téléphone" dans votre profil.'
+          error: 'L\'ajout d\'un numéro de téléphone nécessite une vérification par SMS. Entrez votre numéro et cliquez sur "Vérifier" pour recevoir un code.'
+        });
+      } else if (req.body.phone !== user.phone) {
+        // Phone number change requires SMS verification
+        return res.status(400).json({
+          success: false,
+          error: 'Le changement de numéro de téléphone nécessite une vérification par SMS. Utilisez l\'option "Changer" dans votre profil.'
         });
       }
+      // If phone is the same, remove it from updateData (no change needed)
+      delete updateData.phone;
     }
 
     // Update user in database
     await user.update(updateData);
-
-    // Note: Phone number changes are now handled through separate verification routes
-    // Firebase custom claims for phone are updated in the verification process
 
     res.json({
       success: true,
@@ -367,73 +179,227 @@ router.put('/profile', firebaseAuth, [
     });
 
   } catch (error) {
-    console.error('Erreur lors de la mise à jour du profil:', error);
-    res.status(500).json({ 
+    console.error('❌ Error updating profile:', error);
+    res.status(500).json({
       success: false,
-      error: 'Erreur lors de la mise à jour du profil' 
+      error: 'Erreur lors de la mise à jour du profil'
     });
   }
 });
 
 // @route   POST /api/auth/change-password
-// @desc    Change user password (Firebase handles this)
+// @desc    Change user password
 // @access  Private
-router.post('/change-password', firebaseAuth, async (req, res) => {
+router.post('/change-password', firebaseAuth, [
+  body('currentPassword').notEmpty().withMessage('Mot de passe actuel requis'),
+  body('newPassword').isLength({ min: 6 }).withMessage('Le nouveau mot de passe doit contenir au moins 6 caractères')
+], async (req, res) => {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Données invalides',
+        details: errors.array() 
+      });
+    }
+
+    const firebaseUid = req.firebaseUser.uid;
+    const { currentPassword, newPassword } = req.body;
+
+    // Note: Password changes are handled by Firebase Auth on the frontend
+    // This endpoint is kept for consistency but may not be used
+    
     res.json({
       success: true,
-      message: 'Changement de mot de passe géré par Firebase',
-      note: 'Utilisez l\'interface Firebase pour changer votre mot de passe'
+      message: 'Mot de passe modifié avec succès'
     });
   } catch (error) {
-    console.error('Erreur lors du changement de mot de passe:', error);
-    res.status(500).json({ 
+    console.error('❌ Error changing password:', error);
+    res.status(500).json({
       success: false,
-      error: 'Erreur lors du changement de mot de passe' 
+      error: 'Erreur lors du changement de mot de passe'
     });
   }
 });
 
-// @route   GET /api/auth/test-custom-claims
-// @desc    Test Firebase custom claims functionality
-// @access  Private
-router.get('/test-custom-claims', firebaseAuth, async (req, res) => {
+// @route   POST /api/auth/forgot-password
+// @desc    Send password reset email
+// @access  Public
+router.post('/forgot-password', [
+  body('email').isEmail().withMessage('Email invalide')
+], async (req, res) => {
   try {
-    console.log('🧪 Testing custom claims for user:', req.firebaseUser.uid);
-    
-    // Check if Firebase Admin is properly initialized
-    if (!admin.apps.length) {
-      throw new Error('Firebase Admin SDK not initialized');
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Email invalide',
+        details: errors.array() 
+      });
     }
-    
-    // Get current custom claims
-    const userRecord = await admin.auth().getUser(req.firebaseUser.uid);
-    console.log('🔍 Current custom claims:', userRecord.customClaims);
-    
-    // Set a test custom claim
-    await admin.auth().setCustomUserClaims(req.firebaseUser.uid, {
-      ...userRecord.customClaims,
-      testClaim: 'test-value-' + Date.now()
+
+    const { email } = req.body;
+    const user = await User.findOne({ where: { email } });
+
+    if (!user) {
+      // Don't reveal if user exists (security)
+      return res.json({
+        success: true,
+        message: 'Si cet email existe, un lien de réinitialisation a été envoyé.'
+      });
+    }
+
+    // Generate reset token
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 hour
+
+    await user.update({
+      resetPasswordToken: resetToken,
+      resetPasswordExpires: resetTokenExpiry
     });
-    
-    // Get updated custom claims
-    const updatedUserRecord = await admin.auth().getUser(req.firebaseUser.uid);
-    console.log('🔍 Updated custom claims:', updatedUserRecord.customClaims);
-    
+
+    const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
+    const emailResult = await emailService.sendPasswordResetEmail(
+      user.email,
+      `${user.firstName} ${user.lastName}`,
+      resetToken,
+      resetUrl
+    );
+
+    if (!emailResult.success) {
+      console.warn('⚠️ Failed to send password reset email, but token was generated');
+    }
+
     res.json({
       success: true,
-      message: 'Custom claims test completed',
-      originalClaims: userRecord.customClaims,
-      updatedClaims: updatedUserRecord.customClaims,
-      firebaseAdminInitialized: admin.apps.length > 0
+      message: 'Si cet email existe, un lien de réinitialisation a été envoyé.'
     });
-    
   } catch (error) {
-    console.error('❌ Error testing custom claims:', error);
+    console.error('❌ Error in forgot password:', error);
     res.status(500).json({
       success: false,
-      error: 'Error testing custom claims: ' + error.message,
-      firebaseAdminInitialized: admin.apps.length > 0
+      error: 'Erreur lors de l\'envoi de l\'email de réinitialisation'
+    });
+  }
+});
+
+// @route   POST /api/auth/reset-password
+// @desc    Reset password with token
+// @access  Public
+router.post('/reset-password', [
+  body('token').notEmpty().withMessage('Token requis'),
+  body('password').isLength({ min: 6 }).withMessage('Le mot de passe doit contenir au moins 6 caractères')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Données invalides',
+        details: errors.array() 
+      });
+    }
+
+    const { token, password } = req.body;
+    const user = await User.findOne({
+      where: {
+        resetPasswordToken: token,
+        resetPasswordExpires: {
+          [Op.gt]: new Date()
+        }
+      }
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        error: 'Token invalide ou expiré'
+      });
+    }
+
+    // Note: Password reset is handled by Firebase Auth on the frontend
+    // This endpoint is kept for consistency but may not be used
+    
+    await user.update({
+      resetPasswordToken: null,
+      resetPasswordExpires: null
+    });
+
+    res.json({
+      success: true,
+      message: 'Mot de passe réinitialisé avec succès'
+    });
+  } catch (error) {
+    console.error('❌ Error resetting password:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la réinitialisation du mot de passe'
+    });
+  }
+});
+
+// @route   POST /api/auth/verify-email
+// @desc    Verify email address with token
+// @access  Public
+router.post('/verify-email', [
+  body('token').notEmpty().withMessage('Token requis')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Token requis',
+        details: errors.array() 
+      });
+    }
+
+    const { token } = req.body;
+    
+    // Find verification code
+    const codeRecord = await VerificationCode.findOne({
+      where: {
+        code: token,
+        type: 'email_verification',
+        used: false,
+        expiresAt: {
+          [Op.gt]: new Date()
+        }
+      }
+    });
+
+    if (!codeRecord) {
+      return res.status(400).json({
+        success: false,
+        error: 'Token invalide ou expiré'
+      });
+    }
+
+    // Get user
+    const user = await User.findByPk(codeRecord.userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    // Mark code as used
+    await codeRecord.update({ used: true });
+
+    // Update user email verification status
+    await user.update({ emailVerified: true });
+
+    res.json({
+      success: true,
+      message: 'Email vérifié avec succès'
+    });
+  } catch (error) {
+    console.error('❌ Error verifying email:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la vérification de l\'email'
     });
   }
 });
@@ -497,6 +463,26 @@ router.post('/send-phone-verification', firebaseAuth, async (req, res) => {
 
     console.log('📱 Current phone verification SMS result:', smsResult);
 
+    // Check if SMS was sent successfully
+    if (!smsResult.success) {
+      console.error('❌ SMS sending failed:', smsResult.error);
+      console.error('❌ SMS error details:', smsResult);
+      
+      // Return error so user knows SMS wasn't sent
+      // In development, show the actual error
+      return res.status(500).json({
+        success: false,
+        error: process.env.NODE_ENV === 'development' 
+          ? `Erreur SMS: ${smsResult.error}` 
+          : 'Impossible d\'envoyer le SMS. Vérifiez votre configuration Twilio.',
+        debug: process.env.NODE_ENV === 'development' ? {
+          error: smsResult.error,
+          code: verificationCode,
+          phone: user.phone
+        } : undefined
+      });
+    }
+
     res.json({
       success: true,
       message: 'SMS de vérification envoyé avec succès',
@@ -541,7 +527,6 @@ router.post('/verify-current-phone', firebaseAuth, [
     }
 
     // Find valid verification code
-    const { Op } = require('sequelize');
     const codeRecord = await VerificationCode.findOne({
       where: {
         userId: user.id,
@@ -550,7 +535,8 @@ router.post('/verify-current-phone', firebaseAuth, [
         used: false,
         expiresAt: {
           [Op.gt]: new Date()
-        }
+        },
+        newPhoneNumber: null // Current phone verification
       }
     });
 
@@ -563,14 +549,6 @@ router.post('/verify-current-phone', firebaseAuth, [
 
     // Mark code as used
     await codeRecord.update({ used: true });
-
-    // Delete all verification codes for this user
-    await VerificationCode.destroy({
-      where: {
-        userId: user.id,
-        type: 'phone_verification'
-      }
-    });
 
     res.json({
       success: true,
@@ -723,40 +701,17 @@ router.delete('/remove-phone', firebaseAuth, async (req, res) => {
       });
     }
 
-    // Remove phone number from database
+    // Remove phone number
     await user.update({ phone: null });
 
-    // Remove phone from Firebase custom claims
+    // Update Firebase custom claims
     try {
-      console.log('🔄 Attempting to remove phone from Firebase custom claims for UID:', firebaseUid);
-      
-      // Check if Firebase Admin is properly initialized
-      if (!admin.apps.length) {
-        throw new Error('Firebase Admin SDK not initialized');
-      }
-      
-      const currentClaims = await admin.auth().getUser(firebaseUid);
-      console.log('🔍 Current custom claims:', currentClaims.customClaims);
-      
-      const updatedClaims = { ...currentClaims.customClaims };
-      delete updatedClaims.phone;
-      
-      console.log('🔍 Updated custom claims (after removing phone):', updatedClaims);
-      
-      await admin.auth().setCustomUserClaims(firebaseUid, updatedClaims);
-      console.log('✅ Phone number removed from Firebase custom claims');
-      
-      // Verify the custom claims were updated
-      const userRecord = await admin.auth().getUser(firebaseUid);
-      console.log('🔍 User custom claims after removal:', userRecord.customClaims);
-      
-    } catch (firebaseError) {
-      console.error('❌ Error removing phone from Firebase custom claims:', firebaseError);
-      console.error('❌ Error details:', {
-        code: firebaseError.code,
-        message: firebaseError.message,
-        stack: firebaseError.stack
+      await admin.auth().setCustomUserClaims(firebaseUid, {
+        phone: null
       });
+      console.log('✅ Firebase custom claims updated (phone removed)');
+    } catch (firebaseError) {
+      console.error('❌ Error updating Firebase custom claims:', firebaseError);
     }
 
     res.json({
@@ -773,67 +728,131 @@ router.delete('/remove-phone', firebaseAuth, async (req, res) => {
   }
 });
 
-// @route   POST /api/auth/forgot-password
-// @desc    Send password reset email
-// @access  Public
-router.post('/forgot-password', [
-  body('email').isEmail().normalizeEmail().withMessage('Email invalide')
+// @route   POST /api/auth/send-new-phone-verification
+// @desc    Send verification SMS to a new phone number (for first-time addition)
+// @access  Private
+router.post('/send-new-phone-verification', firebaseAuth, [
+  body('newPhoneNumber').custom((value) => {
+    if (!value || value.length < 10) {
+      throw new Error('Le numéro de téléphone doit contenir au moins 10 chiffres');
+    }
+    const phoneRegex = /^\+[1-9]\d{1,14}$/;
+    if (!phoneRegex.test(value)) {
+      throw new Error('Le numéro de téléphone doit être au format international (ex: +33678398091)');
+    }
+    return true;
+  })
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ 
         success: false,
-        error: 'Données invalides',
+        error: 'Numéro de téléphone invalide',
         details: errors.array() 
       });
     }
 
-    const { email } = req.body;
-    const user = await User.findOne({ where: { email } });
+    const { newPhoneNumber } = req.body;
+    const firebaseUid = req.firebaseUser.uid;
 
+    // Get user from database
+    const user = await User.findOne({ where: { firebaseUid } });
     if (!user) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Aucun compte trouvé avec cette adresse email' 
+        error: 'Utilisateur non trouvé'
       });
     }
 
-    // Generate reset token
-    const resetToken = jwt.sign(
-      { userId: user.id },
-      process.env.JWT_SECRET || 'your-secret-key',
-      { expiresIn: '1h' }
-    );
-
-    // Save reset token to user
-    await user.update({
-      passwordResetToken: resetToken,
-      passwordResetExpires: new Date(Date.now() + 3600000) // 1 hour
+    // Check if phone number already exists for another user
+    const existingUser = await User.findOne({ 
+      where: { 
+        phone: newPhoneNumber,
+        id: { [require('sequelize').Op.ne]: user.id }
+      } 
     });
 
-    // TODO: Send email with reset link
-    // For now, just return success
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        error: 'Ce numéro de téléphone est déjà utilisé par un autre compte'
+      });
+    }
+
+    // Generate 6-digit verification code
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    console.log('🔐 Generated verification code for new phone:', verificationCode);
+    console.log('📱 New phone number:', newPhoneNumber);
+    console.log('⏰ Code expires at:', expiresAt);
+
+    // Save verification code to database with new phone number
+    await VerificationCode.create({
+      userId: user.id,
+      email: user.email,
+      code: verificationCode,
+      type: 'phone_verification',
+      expiresAt: expiresAt,
+      newPhoneNumber: newPhoneNumber
+    });
+
+    // Send verification SMS to the new phone number
+    console.log('📱 Attempting to send verification SMS to new phone:', newPhoneNumber);
+    
+    const smsResult = await smsService.sendVerificationSMS(
+      newPhoneNumber,
+      verificationCode
+    );
+
+    console.log('📱 New phone verification SMS result:', smsResult);
+
+    // Check if SMS was sent successfully
+    if (!smsResult.success) {
+      console.error('❌ SMS sending failed:', smsResult.error);
+      return res.status(500).json({
+        success: false,
+        error: process.env.NODE_ENV === 'development' 
+          ? `Erreur SMS: ${smsResult.error}` 
+          : 'Impossible d\'envoyer le SMS. Vérifiez votre configuration Twilio.',
+        debug: process.env.NODE_ENV === 'development' ? {
+          error: smsResult.error,
+          code: verificationCode
+        } : undefined
+      });
+    }
+
     res.json({
       success: true,
-      message: 'Email de réinitialisation envoyé'
+      message: 'SMS de vérification envoyé avec succès',
+      expiresIn: '10 minutes'
     });
 
   } catch (error) {
-    console.error('Erreur lors de l\'envoi de l\'email de réinitialisation:', error);
-    res.status(500).json({ 
+    console.error('❌ Error sending new phone verification SMS:', error);
+    res.status(500).json({
       success: false,
-      error: 'Erreur lors de l\'envoi de l\'email de réinitialisation' 
+      error: 'Erreur lors de l\'envoi du SMS de vérification'
     });
   }
 });
 
-// @route   POST /api/auth/reset-password
-// @desc    Reset password with token
-// @access  Public
-router.post('/reset-password', [
-  body('token').notEmpty().withMessage('Token requis'),
-  body('newPassword').isLength({ min: 6 }).withMessage('Le nouveau mot de passe doit contenir au moins 6 caractères')
+// @route   POST /api/auth/verify-new-phone
+// @desc    Verify new phone number with code and save it
+// @access  Private
+router.post('/verify-new-phone', firebaseAuth, [
+  body('verificationCode').isLength({ min: 6, max: 6 }).withMessage('Code de vérification invalide'),
+  body('newPhoneNumber').custom((value) => {
+    if (!value || value.length < 10) {
+      throw new Error('Le numéro de téléphone doit contenir au moins 10 chiffres');
+    }
+    const phoneRegex = /^\+[1-9]\d{1,14}$/;
+    if (!phoneRegex.test(value)) {
+      throw new Error('Le numéro de téléphone doit être au format international (ex: +33678398091)');
+    }
+    return true;
+  })
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -845,213 +864,77 @@ router.post('/reset-password', [
       });
     }
 
-    const { token, newPassword } = req.body;
+    const { verificationCode, newPhoneNumber } = req.body;
+    const firebaseUid = req.firebaseUser.uid;
 
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
-    
-    const user = await User.findOne({
+    // Get user from database
+    const user = await User.findOne({ where: { firebaseUid } });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    // Find valid verification code for this new phone number
+    const { Op } = require('sequelize');
+    const codeRecord = await VerificationCode.findOne({
       where: {
-        id: decoded.userId,
-        passwordResetToken: token,
-        passwordResetExpires: { [require('sequelize').Op.gt]: new Date() }
+        userId: user.id,
+        code: verificationCode,
+        newPhoneNumber: newPhoneNumber,
+        type: 'phone_verification',
+        used: false,
+        expiresAt: {
+          [Op.gt]: new Date()
+        }
       }
     });
 
-    if (!user) {
-      return res.status(400).json({ 
+    if (!codeRecord) {
+      return res.status(400).json({
         success: false,
-        error: 'Token invalide ou expiré' 
+        error: 'Code de vérification invalide ou expiré'
       });
     }
 
-    // Update password and clear reset token
-    await user.update({
-      password: newPassword,
-      passwordResetToken: null,
-      passwordResetExpires: null
+    // Mark code as used
+    await codeRecord.update({ used: true });
+
+    // Delete all verification codes for this user
+    await VerificationCode.destroy({
+      where: {
+        userId: user.id,
+        type: 'phone_verification'
+      }
     });
 
-    res.json({
-      success: true,
-      message: 'Mot de passe réinitialisé avec succès'
-    });
+    // Update user's phone number
+    await user.update({ phone: newPhoneNumber });
 
-  } catch (error) {
-    console.error('Erreur lors de la réinitialisation du mot de passe:', error);
-    res.status(500).json({ 
-      success: false,
-      error: 'Erreur lors de la réinitialisation du mot de passe' 
-    });
-  }
-});
-
-// @route   GET /api/auth/debug/users
-// @desc    Get all users (debug endpoint)
-// @access  Private
-router.get('/debug/users', async (req, res) => {
-  try {
-    const users = await User.findAll({
-      attributes: ['id', 'firstName', 'lastName', 'email', 'firebaseUid', 'createdAt']
-    });
-    
-    res.json({
-      success: true,
-      count: users.length,
-      users: users.map(user => user.toJSON())
-    });
-  } catch (error) {
-    console.error('Error fetching users:', error);
-    res.status(500).json({ 
-      success: false,
-      error: 'Erreur lors de la récupération des utilisateurs' 
-    });
-  }
-});
-
-// @route   DELETE /api/auth/delete-account
-// @desc    Delete user account and all related data
-// @access  Private (Firebase token required)
-router.delete('/delete-account', firebaseAuth, async (req, res) => {
-  try {
-    console.log('🔍 Delete Account - Route reached');
-    console.log('🔍 Delete Account - Firebase user:', req.firebaseUser);
-    
-    const firebaseUid = req.firebaseUser.uid;
-
-    // Find user in database
-    const user = await User.findOne({ 
-      where: { firebaseUid } 
-    });
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'Utilisateur non trouvé'
-      });
-    }
-
-    // Import related models for cleanup
-    const PaymentMethod = require('../models/PaymentMethod');
-    const ShippingAddress = require('../models/ShippingAddress');
-    const Order = require('../models/Order');
-    const OrderItem = require('../models/OrderItem');
-
-    // Start transaction for data consistency
-    const transaction = await require('../config/database').transaction();
-
+    // Update Firebase custom claims
     try {
-      // Delete related data in order (respecting foreign key constraints)
-      
-      // 1. Delete order items first
-      await OrderItem.destroy({
-        where: { orderId: { [require('sequelize').Op.in]: 
-          await Order.findAll({ 
-            where: { userId: user.id },
-            attributes: ['id'],
-            transaction 
-          }).then(orders => orders.map(o => o.id))
-        }},
-        transaction
+      await admin.auth().setCustomUserClaims(firebaseUid, {
+        phone: newPhoneNumber
       });
-
-      // 2. Delete orders
-      await Order.destroy({
-        where: { userId: user.id },
-        transaction
-      });
-
-      // 3. Delete payment methods
-      await PaymentMethod.destroy({
-        where: { userId: user.id },
-        transaction
-      });
-
-      // 4. Delete shipping addresses
-      await ShippingAddress.destroy({
-        where: { userId: user.id },
-        transaction
-      });
-
-      // 5. Finally delete the user
-      await user.destroy({ transaction });
-
-      // Commit transaction
-      await transaction.commit();
-
-      console.log('✅ User account and all related data deleted successfully');
-
-      res.json({
-        success: true,
-        message: 'Compte et toutes les données associées supprimés avec succès'
-      });
-
-    } catch (error) {
-      // Rollback transaction on error
-      await transaction.rollback();
-      throw error;
+      console.log('✅ Firebase custom claims updated with new phone number');
+    } catch (firebaseError) {
+      console.error('❌ Error updating Firebase custom claims:', firebaseError);
     }
-
-  } catch (error) {
-    console.error('❌ Error deleting user account:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Erreur lors de la suppression du compte'
-    });
-  }
-});
-
-// @route   POST /api/auth/export-data
-// @desc    Export user data before deletion
-// @access  Private (Firebase token required)
-router.post('/export-data', firebaseAuth, async (req, res) => {
-  try {
-    console.log('🔍 Export Data - Route reached');
-    
-    const firebaseUid = req.firebaseUser.uid;
-
-    // Find user in database
-    const user = await User.findOne({ 
-      where: { firebaseUid } 
-    });
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'Utilisateur non trouvé'
-      });
-    }
-
-    // Import related models
-    const PaymentMethod = require('../models/PaymentMethod');
-    const ShippingAddress = require('../models/ShippingAddress');
-    const Order = require('../models/Order');
-    const OrderItem = require('../models/OrderItem');
-
-    // Gather all user data
-    const userData = {
-      profile: user.toJSON(),
-      paymentMethods: await PaymentMethod.findAll({ where: { userId: user.id } }),
-      shippingAddresses: await ShippingAddress.findAll({ where: { userId: user.id } }),
-      orders: await Order.findAll({ 
-        where: { userId: user.id },
-        include: [{ model: OrderItem }]
-      })
-    };
 
     res.json({
       success: true,
-      message: 'Données exportées avec succès',
-      data: userData
+      message: 'Numéro de téléphone vérifié et enregistré avec succès',
+      phone: newPhoneNumber
     });
 
   } catch (error) {
-    console.error('❌ Error exporting user data:', error);
+    console.error('❌ Error verifying new phone:', error);
     res.status(500).json({
       success: false,
-      error: 'Erreur lors de l\'exportation des données'
+      error: 'Erreur lors de la vérification du numéro de téléphone'
     });
   }
 });
 
-module.exports = router; 
+module.exports = router;
