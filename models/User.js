@@ -57,6 +57,52 @@ const User = sequelize.define('User', {
     defaultValue: 'client',
     allowNull: false
   },
+  clientType: {
+    type: DataTypes.ENUM('particulier', 'professionnel'),
+    defaultValue: 'particulier',
+    allowNull: false,
+    comment: 'Type of client: particulier (individual) or professionnel (business)'
+  },
+  // Business fields (for professionnel clients)
+  companyName: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    comment: 'Company name for professional clients'
+  },
+  siret: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    validate: {
+      len: [14, 14]
+    },
+    comment: 'SIRET number (14 digits) for French businesses'
+  },
+  vatNumber: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    comment: 'VAT/TVA number for professional clients'
+  },
+  billingAddress: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    comment: 'Billing address for professional clients'
+  },
+  billingCity: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    comment: 'Billing city for professional clients'
+  },
+  billingPostalCode: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    comment: 'Billing postal code for professional clients'
+  },
+  billingCountry: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: 'France',
+    comment: 'Billing country for professional clients'
+  },
   isActive: {
     type: DataTypes.BOOLEAN,
     defaultValue: true

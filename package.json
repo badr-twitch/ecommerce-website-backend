@@ -9,6 +9,7 @@
     "dev": "nodemon server.js",
     "db:sync": "node scripts/sync-db.js",
     "db:seed": "node scripts/seed-data.js",
+    "db:migrate:professional": "node scripts/add-professional-client-fields.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {

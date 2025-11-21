@@ -42,27 +42,90 @@ router.get('/user', firebaseAuth, async (req, res) => {
 // @route   POST /api/auth/register-firebase
 // @desc    Register user from Firebase (sync with database)
 // @access  Private (Firebase authenticated)
-router.post('/register-firebase', firebaseAuth, async (req, res) => {
+router.post('/register-firebase', firebaseAuth, [
+  body('clientType').optional().isIn(['particulier', 'professionnel']).withMessage('Type de client invalide'),
+  body('companyName').optional().trim(),
+  body('siret').optional().trim().isLength({ min: 14, max: 14 }).withMessage('Le SIRET doit contenir 14 chiffres'),
+  body('vatNumber').optional().trim(),
+  body('billingAddress').optional().trim(),
+  body('billingCity').optional().trim(),
+  body('billingPostalCode').optional().trim(),
+  body('billingCountry').optional().trim()
+], async (req, res) => {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Données invalides',
+        details: errors.array() 
+      });
+    }
+
     const firebaseUid = req.firebaseUser.uid;
-    const { email, firstName, lastName, photoURL, emailVerified, phone } = req.body;
+    const { 
+      email, 
+      firstName, 
+      lastName, 
+      photoURL, 
+      emailVerified, 
+      phone,
+      clientType = 'particulier',
+      companyName,
+      siret,
+      vatNumber,
+      billingAddress,
+      billingCity,
+      billingPostalCode,
+      billingCountry
+    } = req.body;
+
+    // Validate professional fields if clientType is professionnel
+    if (clientType === 'professionnel') {
+      if (!companyName || !companyName.trim()) {
+        return res.status(400).json({
+          success: false,
+          error: 'Le nom de l\'entreprise est requis pour les clients professionnels'
+        });
+      }
+      if (!siret || siret.length !== 14) {
+        return res.status(400).json({
+          success: false,
+          error: 'Le numéro SIRET est requis et doit contenir 14 chiffres'
+        });
+      }
+    }
 
     // Check if user already exists
     let user = await User.findOne({ where: { firebaseUid } });
     
     if (user) {
       // Update existing user
-      await user.update({
+      const updateData = {
         email,
         firstName: firstName || user.firstName,
         lastName: lastName || user.lastName,
         photoURL: photoURL || user.photoURL,
         emailVerified: emailVerified !== undefined ? emailVerified : user.emailVerified,
-        phone: phone || user.phone
-      });
+        phone: phone || user.phone,
+        clientType: clientType || user.clientType
+      };
+
+      // Add business fields if professionnel
+      if (clientType === 'professionnel') {
+        updateData.companyName = companyName || user.companyName;
+        updateData.siret = siret || user.siret;
+        updateData.vatNumber = vatNumber || user.vatNumber;
+        updateData.billingAddress = billingAddress || user.billingAddress;
+        updateData.billingCity = billingCity || user.billingCity;
+        updateData.billingPostalCode = billingPostalCode || user.billingPostalCode;
+        updateData.billingCountry = billingCountry || user.billingCountry || 'France';
+      }
+
+      await user.update(updateData);
     } else {
       // Create new user
-      user = await User.create({
+      const userData = {
         firebaseUid,
         email,
         firstName: firstName || '',
@@ -71,8 +134,22 @@ router.post('/register-firebase', firebaseAuth, async (req, res) => {
         emailVerified: emailVerified || false,
         phone: phone || null,
         role: 'client',
+        clientType: clientType || 'particulier',
         isActive: true
-      });
+      };
+
+      // Add business fields if professionnel
+      if (clientType === 'professionnel') {
+        userData.companyName = companyName;
+        userData.siret = siret;
+        userData.vatNumber = vatNumber || null;
+        userData.billingAddress = billingAddress || null;
+        userData.billingCity = billingCity || null;
+        userData.billingPostalCode = billingPostalCode || null;
+        userData.billingCountry = billingCountry || 'France';
+      }
+
+      user = await User.create(userData);
     }
 
     res.json({
@@ -124,7 +201,15 @@ router.put('/profile', firebaseAuth, [
   body('photoURL').optional().trim().isURL().withMessage('URL de photo invalide'),
   body('firstName').optional().trim(),
   body('lastName').optional().trim(),
-  body('phone').optional().trim()
+  body('phone').optional().trim(),
+  body('clientType').optional().isIn(['particulier', 'professionnel']).withMessage('Type de client invalide'),
+  body('companyName').optional().trim(),
+  body('siret').optional().trim().isLength({ min: 14, max: 14 }).withMessage('Le SIRET doit contenir 14 chiffres'),
+  body('vatNumber').optional().trim(),
+  body('billingAddress').optional().trim(),
+  body('billingCity').optional().trim(),
+  body('billingPostalCode').optional().trim(),
+  body('billingCountry').optional().trim()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -167,6 +252,22 @@ router.put('/profile', firebaseAuth, [
       }
       // If phone is the same, remove it from updateData (no change needed)
       delete updateData.phone;
+    }
+
+    // Validate professional fields if changing to professionnel
+    if (updateData.clientType === 'professionnel') {
+      if (!updateData.companyName || !updateData.companyName.trim()) {
+        return res.status(400).json({
+          success: false,
+          error: 'Le nom de l\'entreprise est requis pour les clients professionnels'
+        });
+      }
+      if (!updateData.siret || updateData.siret.length !== 14) {
+        return res.status(400).json({
+          success: false,
+          error: 'Le numéro SIRET est requis et doit contenir 14 chiffres'
+        });
+      }
     }
 
     // Update user in database
