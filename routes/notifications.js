@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const firebaseAuth = require('../middleware/firebaseAuth');
-const { adminAuth } = require('../middleware/auth');
+const adminAuth = require('../middleware/adminAuth');
 
 // Initialize notification service (will be set by server.js)
 let notificationService;
@@ -206,7 +206,7 @@ router.put('/preferences', firebaseAuth, checkNotificationService, [
 });
 
 // Admin routes
-router.get('/admin/all', adminAuth, checkNotificationService, async (req, res) => {
+router.get('/admin/all', firebaseAuth, adminAuth, checkNotificationService, async (req, res) => {
   try {
     const { limit = 100, offset = 0 } = req.query;
     const { Notification } = require('../models');
@@ -229,7 +229,7 @@ router.get('/admin/all', adminAuth, checkNotificationService, async (req, res) =
 });
 
 // Create test notification (admin only)
-router.post('/admin/test', adminAuth, checkNotificationService, [
+router.post('/admin/test', firebaseAuth, adminAuth, checkNotificationService, [
   body('type').isIn([
     'order_new',
     'order_status_change',
@@ -283,7 +283,7 @@ router.post('/admin/test', adminAuth, checkNotificationService, [
 });
 
 // Test all notification types (admin only)
-router.post('/admin/test-all', adminAuth, checkNotificationService, async (req, res) => {
+router.post('/admin/test-all', firebaseAuth, adminAuth, checkNotificationService, async (req, res) => {
   try {
     const testNotifications = [
       {
@@ -375,7 +375,7 @@ router.post('/admin/test-all', adminAuth, checkNotificationService, async (req, 
 });
 
 // Test notification with sound (admin only)
-router.post('/admin/test-sound', adminAuth, checkNotificationService, [
+router.post('/admin/test-sound', firebaseAuth, adminAuth, checkNotificationService, [
   body('soundType').isIn(['critical-alert', 'high-alert', 'medium-alert', 'low-alert']).withMessage('Type de son invalide')
 ], async (req, res) => {
   try {
@@ -402,7 +402,7 @@ router.post('/admin/test-sound', adminAuth, checkNotificationService, [
 });
 
 // Get notification statistics (admin only)
-router.get('/admin/stats', adminAuth, checkNotificationService, async (req, res) => {
+router.get('/admin/stats', firebaseAuth, adminAuth, checkNotificationService, async (req, res) => {
   try {
     const { Notification } = require('../models');
     const { Op } = require('sequelize');

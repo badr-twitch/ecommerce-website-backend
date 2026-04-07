@@ -48,7 +48,7 @@ router.get('/sales', async (req, res) => {
     const totalSales = await Order.findAll({
       where: {
         ...dateFilter,
-        status: ['delivered', 'shipped']
+        status: { [Op.in]: ['delivered', 'shipped'] }
       },
       attributes: [
         [sequelize.fn('SUM', sequelize.col('totalAmount')), 'totalRevenue'],
@@ -61,7 +61,7 @@ router.get('/sales', async (req, res) => {
     const dailySales = await Order.findAll({
       where: {
         ...dateFilter,
-        status: ['delivered', 'shipped']
+        status: { [Op.in]: ['delivered', 'shipped'] }
       },
       attributes: [
         [sequelize.fn('DATE', sequelize.col('createdAt')), 'date'],
@@ -87,7 +87,7 @@ router.get('/sales', async (req, res) => {
     const topDays = await Order.findAll({
       where: {
         ...dateFilter,
-        status: ['delivered', 'shipped']
+        status: { [Op.in]: ['delivered', 'shipped'] }
       },
       attributes: [
         [sequelize.fn('DATE', sequelize.col('createdAt')), 'date'],
@@ -162,7 +162,7 @@ router.get('/customers', async (req, res) => {
     // Top customers by order value
     const topCustomers = await Order.findAll({
       where: {
-        status: ['delivered', 'shipped'],
+        status: { [Op.in]: ['delivered', 'shipped'] },
         createdAt: {
           [Op.gte]: daysAgo
         }
@@ -187,7 +187,7 @@ router.get('/customers', async (req, res) => {
     // Customer lifetime value analysis
     const customerLifetimeValue = await Order.findAll({
       where: {
-        status: ['delivered', 'shipped']
+        status: { [Op.in]: ['delivered', 'shipped'] }
       },
       include: [
         {
@@ -210,7 +210,7 @@ router.get('/customers', async (req, res) => {
     // New vs returning customers
     const customerTypes = await Order.findAll({
       where: {
-        status: ['delivered', 'shipped'],
+        status: { [Op.in]: ['delivered', 'shipped'] },
         createdAt: {
           [Op.gte]: daysAgo
         }
@@ -298,7 +298,7 @@ router.get('/products', async (req, res) => {
           model: Order,
           as: 'order',
           where: {
-            status: ['delivered', 'shipped'],
+            status: { [Op.in]: ['delivered', 'shipped'] },
             createdAt: {
               [Op.gte]: daysAgo
             }
@@ -335,7 +335,7 @@ router.get('/products', async (req, res) => {
           model: Order,
           as: 'order',
           where: {
-            status: ['delivered', 'shipped'],
+            status: { [Op.in]: ['delivered', 'shipped'] },
             createdAt: {
               [Op.gte]: daysAgo
             }
@@ -395,7 +395,7 @@ router.get('/products', async (req, res) => {
               model: Order,
               as: 'order',
               where: {
-                status: ['delivered', 'shipped'],
+                status: { [Op.in]: ['delivered', 'shipped'] },
                 createdAt: {
                   [Op.gte]: daysAgo
                 }
@@ -483,7 +483,7 @@ router.post('/export', async (req, res) => {
         const salesData = await Order.findAll({
           where: {
             ...dateFilter,
-            status: ['delivered', 'shipped']
+            status: { [Op.in]: ['delivered', 'shipped'] }
           },
           include: [
             {
@@ -519,7 +519,7 @@ router.post('/export', async (req, res) => {
               model: Order,
               as: 'orders',
               where: {
-                status: ['delivered', 'shipped']
+                status: { [Op.in]: ['delivered', 'shipped'] }
               },
               attributes: [
                 [sequelize.fn('SUM', sequelize.col('totalAmount')), 'totalSpent'],
@@ -560,7 +560,7 @@ router.post('/export', async (req, res) => {
                   model: Order,
                   as: 'order',
                   where: {
-                    status: ['delivered', 'shipped'],
+                    status: { [Op.in]: ['delivered', 'shipped'] },
                     ...dateFilter
                   },
                   attributes: []

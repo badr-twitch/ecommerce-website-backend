@@ -5,7 +5,8 @@ const Product = require('../models/Product');
 const Category = require('../models/Category');
 const Review = require('../models/Review');
 const User = require('../models/User');
-const { auth, optionalAuth, adminAuth } = require('../middleware/auth');
+const firebaseAuth = require('../middleware/firebaseAuth');
+const adminAuth = require('../middleware/adminAuth');
 
 const router = express.Router();
 
@@ -201,7 +202,7 @@ router.get('/:id', async (req, res) => {
 // @route   POST /api/products
 // @desc    Create a new product
 // @access  Private (Admin)
-router.post('/', adminAuth, [
+router.post('/', firebaseAuth, adminAuth, [
   body('name').trim().isLength({ min: 2, max: 200 }).withMessage('Le nom doit contenir entre 2 et 200 caractères'),
   body('description').trim().isLength({ min: 10, max: 2000 }).withMessage('La description doit contenir entre 10 et 2000 caractères'),
   body('price').isFloat({ min: 0 }).withMessage('Prix invalide'),
@@ -243,7 +244,7 @@ router.post('/', adminAuth, [
 // @route   PUT /api/products/:id
 // @desc    Update a product
 // @access  Private (Admin)
-router.put('/:id', adminAuth, [
+router.put('/:id', firebaseAuth, adminAuth, [
   body('name').optional().trim().isLength({ min: 2, max: 200 }),
   body('description').optional().trim().isLength({ min: 10, max: 2000 }),
   body('price').optional().isFloat({ min: 0 }),
@@ -286,7 +287,7 @@ router.put('/:id', adminAuth, [
 // @route   DELETE /api/products/:id
 // @desc    Delete a product
 // @access  Private (Admin)
-router.delete('/:id', adminAuth, async (req, res) => {
+router.delete('/:id', firebaseAuth, adminAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const product = await Product.findByPk(id);
@@ -315,7 +316,7 @@ router.delete('/:id', adminAuth, async (req, res) => {
 // @route   POST /api/products/:id/reviews
 // @desc    Add a review to a product
 // @access  Private
-router.post('/:id/reviews', auth, [
+router.post('/:id/reviews', firebaseAuth, [
   body('rating').isInt({ min: 1, max: 5 }).withMessage('Note invalide'),
   body('title').optional().trim().isLength({ max: 200 }),
   body('comment').optional().trim().isLength({ max: 1000 })

@@ -182,6 +182,9 @@ router.get('/product/:productId/summary', async (req, res) => {
 router.post('/', firebaseAuth, async (req, res) => {
   try {
     const { productId, title, content, rating, mediaUrls, tags } = req.body;
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Utilisateur non trouvé dans la base de données' });
+    }
     const userId = req.user.id;
     
     // Validate required fields
@@ -223,7 +226,7 @@ router.post('/', firebaseAuth, async (req, res) => {
            as: 'order',
            where: {
              userId: userId,
-             status: ['delivered', 'shipped']
+             status: { [Op.in]: ['delivered', 'shipped'] }
            },
            attributes: []
          }
@@ -290,6 +293,9 @@ router.put('/:reviewId', firebaseAuth, async (req, res) => {
   try {
     const { reviewId } = req.params;
     const { title, content, rating, mediaUrls, tags } = req.body;
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Utilisateur non trouvé dans la base de données' });
+    }
     const userId = req.user.id;
     
     // Find the review
@@ -370,8 +376,11 @@ router.put('/:reviewId', firebaseAuth, async (req, res) => {
 router.delete('/:reviewId', firebaseAuth, async (req, res) => {
   try {
     const { reviewId } = req.params;
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Utilisateur non trouvé dans la base de données' });
+    }
     const userId = req.user.id;
-    
+
     // Find the review
     const review = await Review.findByPk(reviewId);
     
@@ -424,8 +433,11 @@ router.delete('/:reviewId', firebaseAuth, async (req, res) => {
 router.post('/:reviewId/helpful', firebaseAuth, async (req, res) => {
   try {
     const { reviewId } = req.params;
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Utilisateur non trouvé dans la base de données' });
+    }
     const userId = req.user.id;
-    
+
     const review = await Review.findByPk(reviewId);
     
     if (!review) {
@@ -477,10 +489,13 @@ router.post('/:reviewId/helpful', firebaseAuth, async (req, res) => {
 router.post('/:reviewId/not-helpful', firebaseAuth, async (req, res) => {
   try {
     const { reviewId } = req.params;
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Utilisateur non trouvé dans la base de données' });
+    }
     const userId = req.user.id;
-    
+
     const review = await Review.findByPk(reviewId);
-    
+
     if (!review) {
       return res.status(404).json({
         success: false,
@@ -626,6 +641,9 @@ router.put('/admin/:reviewId/status', firebaseAuth, adminAuth, async (req, res) 
   try {
     const { reviewId } = req.params;
     const { status, moderationNotes } = req.body;
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Utilisateur non trouvé dans la base de données' });
+    }
     const adminId = req.user.id;
     
     const review = await Review.findByPk(reviewId);

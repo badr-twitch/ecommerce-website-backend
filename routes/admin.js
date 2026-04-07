@@ -40,7 +40,7 @@ router.get('/dashboard', async (req, res) => {
     
     // Enhanced revenue calculation
     const completedOrders = await Order.findAll({
-      where: { status: ['delivered', 'shipped'] },
+      where: { status: { [Op.in]: ['delivered', 'shipped'] } },
       attributes: ['totalAmount', 'createdAt']
     });
     
@@ -53,7 +53,7 @@ router.get('/dashboard', async (req, res) => {
     
     const revenueData = await Order.findAll({
       where: {
-        status: ['delivered', 'shipped'],
+        status: { [Op.in]: ['delivered', 'shipped'] },
         createdAt: {
           [Op.gte]: sevenDaysAgo
         }
@@ -102,7 +102,7 @@ router.get('/dashboard', async (req, res) => {
         {
           model: Order,
           as: 'order',
-          where: { status: ['delivered', 'shipped'] },
+          where: { status: { [Op.in]: ['delivered', 'shipped'] } },
           attributes: []
         }
       ],
@@ -485,7 +485,13 @@ router.post('/categories', [
       });
     }
 
-    const category = await Category.create(req.body);
+    const slug = req.body.slug || req.body.name
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    const category = await Category.create({ ...req.body, slug });
 
     res.status(201).json({
       success: true,

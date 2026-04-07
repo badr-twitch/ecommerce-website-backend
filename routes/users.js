@@ -2,15 +2,15 @@ const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const User = require('../models/User');
 const Order = require('../models/Order');
-const { auth, adminAuth } = require('../middleware/auth');
 const firebaseAuth = require('../middleware/firebaseAuth');
+const adminAuth = require('../middleware/adminAuth');
 
 const router = express.Router();
 
 // @route   GET /api/users
 // @desc    Get all users (admin only)
 // @access  Private (Admin)
-router.get('/', adminAuth, [
+router.get('/', firebaseAuth, adminAuth, [
   query('page').optional().isInt({ min: 1 }),
   query('limit').optional().isInt({ min: 1, max: 100 }),
   query('search').optional().trim(),
@@ -83,7 +83,7 @@ router.get('/', adminAuth, [
 // @route   GET /api/users/:id
 // @desc    Get user by ID (admin or own profile)
 // @access  Private
-router.get('/:id', auth, async (req, res) => {
+router.get('/:id', firebaseAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -117,7 +117,7 @@ router.get('/:id', auth, async (req, res) => {
 // @route   PUT /api/users/:id
 // @desc    Update user (admin or own profile)
 // @access  Private
-router.put('/:id', auth, [
+router.put('/:id', firebaseAuth, [
   body('firstName').optional().trim().isLength({ min: 2, max: 50 }),
   body('lastName').optional().trim().isLength({ min: 2, max: 50 }),
   body('phone').optional().isMobilePhone('fr-FR'),
@@ -176,7 +176,7 @@ router.put('/:id', auth, [
 // @route   DELETE /api/users/:id
 // @desc    Delete user (admin only)
 // @access  Private (Admin)
-router.delete('/:id', adminAuth, async (req, res) => {
+router.delete('/:id', firebaseAuth, adminAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -213,7 +213,7 @@ router.delete('/:id', adminAuth, async (req, res) => {
 // @route   GET /api/users/:id/orders
 // @desc    Get user orders (admin or own orders)
 // @access  Private
-router.get('/:id/orders', auth, [
+router.get('/:id/orders', firebaseAuth, [
   query('page').optional().isInt({ min: 1 }),
   query('limit').optional().isInt({ min: 1, max: 50 }),
   query('status').optional().isIn(['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded'])
@@ -446,19 +446,19 @@ router.post('/:id/wishlist', firebaseAuth, [
     const wishlist = user.wishlist || [];
     
     // Check if product is already in wishlist
-    if (wishlist.includes(productId)) {
-      return res.status(400).json({ 
-        error: 'Produit déjà dans la wishlist' 
+    if (wishlist.some(id => String(id) === String(productId))) {
+      return res.status(400).json({
+        error: 'Produit déjà dans la wishlist'
       });
     }
 
-    // Add product to wishlist
-    wishlist.push(productId);
-    await user.update({ wishlist });
+    // Add product to wishlist (create new array so Sequelize detects the change)
+    const updatedWishlist = [...wishlist, productId];
+    await user.update({ wishlist: updatedWishlist });
 
     res.json({
       message: 'Produit ajouté à la wishlist',
-      wishlist
+      wishlist: updatedWishlist
     });
 
   } catch (error) {
@@ -492,16 +492,16 @@ router.delete('/:id/wishlist/:productId', firebaseAuth, async (req, res) => {
     }
 
     const wishlist = user.wishlist || [];
-    
-    // Check if product is in wishlist
-    if (!wishlist.includes(productId)) {
-      return res.status(400).json({ 
-        error: 'Produit non trouvé dans la wishlist' 
+
+    // Check if product is in wishlist (use String() to handle potential type mismatches)
+    if (!wishlist.some(id => String(id) === String(productId))) {
+      return res.status(400).json({
+        error: 'Produit non trouvé dans la wishlist'
       });
     }
 
     // Remove product from wishlist
-    const updatedWishlist = wishlist.filter(id => id !== productId);
+    const updatedWishlist = wishlist.filter(id => String(id) !== String(productId));
     await user.update({ wishlist: updatedWishlist });
 
     res.json({

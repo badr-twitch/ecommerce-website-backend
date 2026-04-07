@@ -2,7 +2,8 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const Category = require('../models/Category');
 const Product = require('../models/Product');
-const { auth, adminAuth } = require('../middleware/auth');
+const firebaseAuth = require('../middleware/firebaseAuth');
+const adminAuth = require('../middleware/adminAuth');
 
 const router = express.Router();
 
@@ -76,7 +77,7 @@ router.get('/:id', async (req, res) => {
 // @route   POST /api/categories
 // @desc    Create a new category
 // @access  Private (Admin)
-router.post('/', adminAuth, [
+router.post('/', firebaseAuth, adminAuth, [
   body('name').trim().isLength({ min: 2, max: 100 }).withMessage('Le nom doit contenir entre 2 et 100 caractères'),
   body('slug').trim().isLength({ min: 2, max: 100 }).withMessage('Le slug doit contenir entre 2 et 100 caractères'),
   body('parentId').optional().isUUID().withMessage('Parent ID invalide'),
@@ -147,7 +148,7 @@ router.post('/', adminAuth, [
 // @route   PUT /api/categories/:id
 // @desc    Update a category
 // @access  Private (Admin)
-router.put('/:id', adminAuth, [
+router.put('/:id', firebaseAuth, adminAuth, [
   body('name').optional().trim().isLength({ min: 2, max: 100 }),
   body('slug').optional().trim().isLength({ min: 2, max: 100 }),
   body('parentId').optional().isUUID(),
@@ -219,7 +220,7 @@ router.put('/:id', adminAuth, [
 // @route   DELETE /api/categories/:id
 // @desc    Delete a category
 // @access  Private (Admin)
-router.delete('/:id', adminAuth, async (req, res) => {
+router.delete('/:id', firebaseAuth, adminAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const category = await Category.findByPk(id);

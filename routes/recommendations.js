@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const RecommendationService = require('../services/recommendationService');
 const firebaseAuth = require('../middleware/firebaseAuth');
+const adminAuth = require('../middleware/adminAuth');
 
 const recommendationService = new RecommendationService();
 
@@ -12,7 +13,10 @@ const recommendationService = new RecommendationService();
  */
 router.get('/user', firebaseAuth, async (req, res) => {
   try {
-    const userId = req.firebaseUser.uid;
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Utilisateur non trouvé dans la base de données' });
+    }
+    const userId = req.user.id;
     const limit = parseInt(req.query.limit) || 10;
 
     const recommendations = await recommendationService.getUserRecommendations(userId, limit);
@@ -142,13 +146,10 @@ router.get('/trending', async (req, res) => {
  * @desc    Get recommendations based on similar users (admin only)
  * @access  Private (Admin)
  */
-router.get('/similar-users/:userId', firebaseAuth, async (req, res) => {
+router.get('/similar-users/:userId', firebaseAuth, adminAuth, async (req, res) => {
   try {
     const { userId } = req.params;
     const limit = parseInt(req.query.limit) || 5;
-
-    // Check if current user is admin (you might want to add adminAuth middleware)
-    // For now, we'll allow any authenticated user to access this
 
     const user = await require('../models').User.findByPk(userId);
     if (!user) {

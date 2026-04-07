@@ -4,8 +4,8 @@ const Order = require('../models/Order');
 const OrderItem = require('../models/OrderItem');
 const Product = require('../models/Product');
 const User = require('../models/User');
-const { adminAuth } = require('../middleware/auth');
 const firebaseAuth = require('../middleware/firebaseAuth');
+const adminAuth = require('../middleware/adminAuth');
 
 const router = express.Router();
 
@@ -349,7 +349,7 @@ router.post('/', firebaseAuth, [
 // @route   PUT /api/orders/:id/status
 // @desc    Update order status (admin only)
 // @access  Private (Admin)
-router.put('/:id/status', adminAuth, [
+router.put('/:id/status', firebaseAuth, adminAuth, [
   body('status').isIn(['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded']).withMessage('Statut invalide'),
   body('trackingNumber').optional().trim(),
   body('internalNotes').optional().trim()
