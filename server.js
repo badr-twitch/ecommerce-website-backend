@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const dotenv = require('dotenv');
 const path = require('path');
 const http = require('http');
@@ -8,10 +9,13 @@ const socketIo = require('socket.io');
 // Load environment variables
 dotenv.config();
 
-// Debug environment variables
-console.log('🔍 Environment check:');
-console.log('- FIREBASE_SERVICE_ACCOUNT exists:', !!process.env.FIREBASE_SERVICE_ACCOUNT);
-console.log('- FIREBASE_DATABASE_URL exists:', !!process.env.FIREBASE_DATABASE_URL);
+// Validate required environment variables
+const requiredEnvVars = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'JWT_SECRET', 'FIREBASE_SERVICE_ACCOUNT'];
+const missingVars = requiredEnvVars.filter(v => !process.env[v]);
+if (missingVars.length > 0) {
+  console.error(`FATAL: Missing required environment variables: ${missingVars.join(', ')}`);
+  process.exit(1);
+}
 
 // Initialize Firebase Admin SDK
 const admin = require('firebase-admin');
@@ -20,11 +24,9 @@ const admin = require('firebase-admin');
 let serviceAccount;
 try {
   serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-  console.log('✅ Firebase service account loaded successfully');
 } catch (error) {
-  console.error('❌ Error parsing Firebase service account:', error);
-  console.error('❌ FIREBASE_SERVICE_ACCOUNT value:', process.env.FIREBASE_SERVICE_ACCOUNT ? 'EXISTS' : 'MISSING');
-  serviceAccount = null;
+  console.error('FATAL: Cannot parse FIREBASE_SERVICE_ACCOUNT');
+  process.exit(1);
 }
 
 // Initialize Firebase Admin SDK
@@ -36,7 +38,8 @@ if (!admin.apps.length) {
     
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
-      databaseURL: process.env.FIREBASE_DATABASE_URL
+      databaseURL: process.env.FIREBASE_DATABASE_URL,
+      storageBucket: process.env.FIREBASE_STORAGE_BUCKET
     });
     console.log('✅ Firebase Admin SDK initialized successfully');
     
@@ -68,16 +71,72 @@ const io = socketIo(server, {
 const PORT = process.env.PORT || 5000;
 
 // Middleware
+app.use(helmet());
+const { globalLimiter } = require('./middleware/rateLimiter');
+app.use(globalLimiter);
+const allowedOrigins = process.env.FRONTEND_URL
+  ? process.env.FRONTEND_URL.split(',').map(s => s.trim())
+  : ['http://localhost:5173'];
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, etc.) in development
+    if (!origin && process.env.NODE_ENV !== 'production') return callback(null, true);
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true
 }));
+
+// Stripe webhook needs raw body — must be before express.json()
+app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
+  const paymentProcessor = require('./services/paymentProcessor');
+  const Order = require('./models/Order');
+  const sig = req.headers['stripe-signature'];
+
+  try {
+    const event = paymentProcessor.constructWebhookEvent(req.body, sig);
+
+    switch (event.type) {
+      case 'payment_intent.succeeded': {
+        const pi = event.data.object;
+        console.log(`✅ Stripe: Payment ${pi.id} succeeded`);
+        // Update order payment status if order already exists
+        const order = await Order.findOne({ where: { paymentTransactionId: pi.id } });
+        if (order && order.paymentStatus !== 'paid') {
+          await order.update({ paymentStatus: 'paid' });
+        }
+        break;
+      }
+      case 'payment_intent.payment_failed': {
+        const pi = event.data.object;
+        console.log(`❌ Stripe: Payment ${pi.id} failed`);
+        const order = await Order.findOne({ where: { paymentTransactionId: pi.id } });
+        if (order) {
+          await order.update({ paymentStatus: 'failed' });
+        }
+        break;
+      }
+      default:
+        console.log(`Stripe webhook: ${event.type}`);
+    }
+
+    res.json({ received: true });
+  } catch (err) {
+    console.error('Stripe webhook error:', err.message);
+    res.status(400).json({ error: `Webhook Error: ${err.message}` });
+  }
+});
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+const sanitizeBody = require('./middleware/sanitize');
+app.use(sanitizeBody);
 
-// Request logging middleware
+// Request logging middleware (no body in production to prevent leaking sensitive data)
 app.use((req, res, next) => {
-  console.log(`🔍 ${req.method} ${req.path} - Body:`, req.body);
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`🔍 ${req.method} ${req.path}`);
+  }
   next();
 });
 
@@ -119,8 +178,14 @@ sequelize.authenticate()
 const NotificationService = require('./services/notificationService');
 const notificationService = new NotificationService(io);
 
+// Start membership cron job
+const { startMembershipCron } = require('./services/membershipCron');
+startMembershipCron(notificationService);
+const { startNotificationCleanup } = require('./services/notificationCleanupCron');
+startNotificationCleanup();
+
 // Import routes
-const authRoutes = require('./routes/auth');
+const { router: authRoutes, setNotificationService: setAuthNotificationService } = require('./routes/auth');
 const productRoutes = require('./routes/products');
 const { router: orderRoutes, setNotificationService: setOrderNotificationService } = require('./routes/orders');
 const userRoutes = require('./routes/users');
@@ -132,16 +197,20 @@ const analyticsRoutes = require('./routes/analytics');
 const reviewRoutes = require('./routes/reviews');
 const recommendationRoutes = require('./routes/recommendations');
 const { router: notificationRoutes, setNotificationService } = require('./routes/notifications');
-const membershipRoutes = require('./routes/membership');
+const { router: membershipRoutes, setNotificationService: setMembershipNotificationService } = require('./routes/membership');
 
 // Set notification service in routes
 setNotificationService(notificationService);
 setOrderNotificationService(notificationService);
+setMembershipNotificationService(notificationService);
+setAuthNotificationService(notificationService);
 
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/orders', require('./routes/invoices'));
+app.use('/api/orders', require('./routes/orderShare'));
 app.use('/api/users', userRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/payment-methods', paymentMethodRoutes);
@@ -153,41 +222,43 @@ app.use('/api/recommendations', recommendationRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/membership', membershipRoutes);
 
+// WebSocket authentication middleware
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+    if (!token) {
+      return next(new Error('Authentication required'));
+    }
+
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    const user = await User.findOne({ where: { firebaseUid: decodedToken.uid } });
+    if (!user) {
+      return next(new Error('User not found'));
+    }
+
+    socket.user = user;
+    next();
+  } catch (error) {
+    next(new Error('Invalid token'));
+  }
+});
+
 // WebSocket connection handling
 io.on('connection', (socket) => {
-  console.log(`🔌 Client connected: ${socket.id}`);
+  const user = socket.user;
 
-  // Join admin room
-  socket.on('join-admin', () => {
-    socket.join('admin');
-    console.log(`👑 Admin joined room: ${socket.id}`);
-  });
+  // Auto-join user room based on verified identity
+  socket.join(`user-${user.id}`);
 
-  // Join user room
-  socket.on('join-user', async (userId) => {
-    try {
-      // Verify user exists
-      const user = await User.findOne({ where: { firebaseUid: userId } });
-      if (user) {
-        socket.join(`user-${user.id}`);
-        notificationService.addUserToRoom(user.id, socket.id);
-        console.log(`👤 User ${user.id} joined room: ${socket.id}`);
-      }
-    } catch (error) {
-      console.error('❌ Error joining user room:', error);
-    }
-  });
+  // Join admin room if user is admin
+  if (user.role === 'admin') {
+    socket.on('join-admin', () => {
+      socket.join('admin');
+    });
+  }
 
-  // Handle disconnection
   socket.on('disconnect', () => {
-    console.log(`🔌 Client disconnected: ${socket.id}`);
-    // Remove user from notification service
-    for (const [userId, socketId] of notificationService.userRooms.entries()) {
-      if (socketId === socket.id) {
-        notificationService.removeUserFromRoom(userId);
-        break;
-      }
-    }
+    // Socket.IO auto-cleans room membership
   });
 });
 
@@ -202,10 +273,24 @@ app.get('/api/health', (req, res) => {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ 
+  // Only log stack trace in development
+  if (process.env.NODE_ENV === 'development') {
+    console.error(err.stack);
+  } else {
+    console.error(`Error: ${err.message} | ${req.method} ${req.originalUrl}`);
+  }
+
+  // Notify admin of system errors
+  if (notificationService) {
+    notificationService.notifySystemError(err, {
+      url: req.originalUrl,
+      method: req.method
+    }).catch(() => {});
+  }
+
+  res.status(500).json({
     error: 'Erreur interne du serveur',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Une erreur est survenue'
+    ...(process.env.NODE_ENV === 'development' && { message: err.message })
   });
 });
 

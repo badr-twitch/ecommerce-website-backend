@@ -1,21 +1,11 @@
 const { Notification, NotificationPreference, User, Order, Product } = require('../models');
 const { Op } = require('sequelize');
+const emailService = require('./emailService');
 
 class NotificationService {
   constructor(io) {
     this.io = io;
     this.adminRoom = 'admin';
-    this.userRooms = new Map(); // userId -> socketId
-  }
-
-  // Add user to socket room
-  addUserToRoom(userId, socketId) {
-    this.userRooms.set(userId, socketId);
-  }
-
-  // Remove user from socket room
-  removeUserFromRoom(userId) {
-    this.userRooms.delete(userId);
   }
 
   // Get user preferences
@@ -56,7 +46,7 @@ class NotificationService {
   }
 
   // Create notification
-  async createNotification(data) {
+  async createNotification(payload) {
     try {
       const {
         userId = null, // null for admin notifications
@@ -66,7 +56,7 @@ class NotificationService {
         priority = 'medium',
         data = {},
         expiresAt = null
-      } = data;
+      } = payload;
 
       // Check if user has disabled this notification type
       if (userId) {
@@ -89,6 +79,27 @@ class NotificationService {
 
       // Send real-time notification
       await this.sendRealTimeNotification(notification, userId);
+
+      // Send email notification if user has email enabled for this type
+      if (userId) {
+        try {
+          const preferences = await this.getUserPreferences(userId);
+          if (preferences[type]?.emailEnabled) {
+            const notifUser = await User.findByPk(userId, { attributes: ['email', 'firstName', 'lastName'] });
+            if (notifUser?.email) {
+              await emailService.sendNotificationEmail(
+                notifUser.email,
+                notifUser.firstName || 'Client',
+                title,
+                message,
+                { priority }
+              );
+            }
+          }
+        } catch (emailError) {
+          console.error('❌ Error sending notification email:', emailError);
+        }
+      }
 
       return notification;
     } catch (error) {
@@ -117,15 +128,12 @@ class NotificationService {
         target: 'admin'
       });
 
-      // Send to specific user if provided
+      // Send to specific user if provided (using Socket.IO rooms)
       if (userId) {
-        const socketId = this.userRooms.get(userId);
-        if (socketId) {
-          this.io.to(socketId).emit('notification', {
-            ...notificationData,
-            target: 'user'
-          });
-        }
+        this.io.to(`user-${userId}`).emit('notification', {
+          ...notificationData,
+          target: 'user'
+        });
       }
 
       // Play sound based on priority
@@ -141,14 +149,11 @@ class NotificationService {
       // Send sound notification to admin
       this.io.to(this.adminRoom).emit('notification-sound', { sound });
       
-      // Send sound notification to user if enabled
+      // Send sound notification to user if enabled (using Socket.IO rooms)
       if (userId) {
         const preferences = await this.getUserPreferences(userId);
         if (preferences[notification.type]?.soundEnabled) {
-          const socketId = this.userRooms.get(userId);
-          if (socketId) {
-            this.io.to(socketId).emit('notification-sound', { sound });
-          }
+          this.io.to(`user-${userId}`).emit('notification-sound', { sound });
         }
       }
 
@@ -483,6 +488,36 @@ class NotificationService {
       return true;
     } catch (error) {
       console.error('❌ Error updating notification preferences:', error);
+      return false;
+    }
+  }
+
+  // Create default notification preferences for a new user
+  async createDefaultPreferences(userId) {
+    try {
+      const defaultTypes = [
+        'order_new', 'order_status_change', 'order_high_value',
+        'inventory_low_stock', 'inventory_out_of_stock', 'inventory_restored',
+        'user_registration', 'user_vip_login', 'user_verification',
+        'revenue_milestone', 'system_error', 'system_performance',
+        'payment_failure', 'refund_request', 'membership'
+      ];
+
+      for (const type of defaultTypes) {
+        await NotificationPreference.findOrCreate({
+          where: { userId, type },
+          defaults: {
+            enabled: true,
+            emailEnabled: false,
+            soundEnabled: true,
+            toastEnabled: true
+          }
+        });
+      }
+
+      return true;
+    } catch (error) {
+      console.error('❌ Error creating default preferences:', error);
       return false;
     }
   }

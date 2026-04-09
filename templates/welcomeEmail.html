@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bienvenue sur UMOD</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .logo {
+            font-size: 28px;
+            font-weight: bold;
+            color: #2563eb;
+            margin-bottom: 10px;
+        }
+        .title {
+            color: #1f2937;
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+        .content {
+            margin-bottom: 30px;
+        }
+        .features {
+            margin: 25px 0;
+        }
+        .feature {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 12px 0;
+            border-bottom: 1px solid #f3f4f6;
+        }
+        .feature:last-child {
+            border-bottom: none;
+        }
+        .feature-icon {
+            font-size: 24px;
+            flex-shrink: 0;
+        }
+        .feature-text h4 {
+            margin: 0 0 4px 0;
+            color: #1f2937;
+            font-size: 15px;
+        }
+        .feature-text p {
+            margin: 0;
+            color: #6b7280;
+            font-size: 13px;
+        }
+        .button {
+            display: inline-block;
+            background: linear-gradient(135deg, #2563eb, #7c3aed);
+            color: white;
+            padding: 15px 30px;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        .button-container {
+            text-align: center;
+            margin: 30px 0;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e5e7eb;
+            color: #6b7280;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">UMOD</div>
+            <h1 class="title">Bienvenue sur UMOD !</h1>
+        </div>
+
+        <div class="content">
+            <p>Bonjour <strong>{{userName}}</strong>,</p>
+
+            <p>Nous sommes ravis de vous accueillir sur UMOD ! Votre compte a été créé avec succès.</p>
+
+            <div class="features">
+                <div class="feature">
+                    <span class="feature-icon">🛍️</span>
+                    <div class="feature-text">
+                        <h4>Des produits de qualité</h4>
+                        <p>Découvrez notre sélection de produits soigneusement choisis.</p>
+                    </div>
+                </div>
+                <div class="feature">
+                    <span class="feature-icon">🚚</span>
+                    <div class="feature-text">
+                        <h4>Livraison rapide</h4>
+                        <p>Livraison gratuite à partir de 536 DH d'achat.</p>
+                    </div>
+                </div>
+                <div class="feature">
+                    <span class="feature-icon">🔒</span>
+                    <div class="feature-text">
+                        <h4>Paiement sécurisé</h4>
+                        <p>Vos paiements sont protégés par Stripe.</p>
+                    </div>
+                </div>
+                <div class="feature">
+                    <span class="feature-icon">⭐</span>
+                    <div class="feature-text">
+                        <h4>UMOD Prime</h4>
+                        <p>Rejoignez notre programme de fidélité pour des avantages exclusifs.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="button-container">
+                <a href="{{shopUrl}}" class="button">Commencer mes achats</a>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>Pour toute question, contactez-nous à <strong>support@umod.ma</strong></p>
+            <p>&copy; 2024 UMOD. Tous droits réservés.</p>
+        </div>
+    </div>
+</body>
+</html>

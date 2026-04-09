@@ -10,6 +10,31 @@ const { Op } = require('sequelize');
 const crypto = require('crypto');
 
 const router = express.Router();
+const { authLimiter, writeLimiter } = require('../middleware/rateLimiter');
+
+// Notification service (will be set by server.js)
+let notificationService;
+const setNotificationService = (service) => {
+  notificationService = service;
+};
+
+const { rateLimit } = require('express-rate-limit');
+
+const passwordResetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Trop de tentatives. Veuillez réessayer dans 15 minutes.' }
+});
+
+const verificationLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Trop de tentatives. Veuillez réessayer dans 1 heure.' }
+});
 
 // @route   GET /api/auth/user
 // @desc    Get user by Firebase UID
@@ -42,15 +67,15 @@ router.get('/user', firebaseAuth, async (req, res) => {
 // @route   POST /api/auth/register-firebase
 // @desc    Register user from Firebase (sync with database)
 // @access  Private (Firebase authenticated)
-router.post('/register-firebase', firebaseAuth, [
-  body('clientType').optional().isIn(['particulier', 'professionnel']).withMessage('Type de client invalide'),
-  body('companyName').optional().trim(),
-  body('siret').optional().trim().isLength({ min: 14, max: 14 }).withMessage('Le SIRET doit contenir 14 chiffres'),
-  body('vatNumber').optional().trim(),
-  body('billingAddress').optional().trim(),
-  body('billingCity').optional().trim(),
-  body('billingPostalCode').optional().trim(),
-  body('billingCountry').optional().trim()
+router.post('/register-firebase', authLimiter, firebaseAuth, [
+  body('clientType').optional({ nullable: true }).isIn(['particulier', 'professionnel']).withMessage('Type de client invalide'),
+  body('companyName').optional({ nullable: true }).trim(),
+  body('siret').optional({ nullable: true }).trim().isLength({ min: 14, max: 14 }).withMessage('Le SIRET doit contenir 14 chiffres'),
+  body('vatNumber').optional({ nullable: true }).trim(),
+  body('billingAddress').optional({ nullable: true }).trim(),
+  body('billingCity').optional({ nullable: true }).trim(),
+  body('billingPostalCode').optional({ nullable: true }).trim(),
+  body('billingCountry').optional({ nullable: true }).trim()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -150,6 +175,23 @@ router.post('/register-firebase', firebaseAuth, [
       }
 
       user = await User.create(userData);
+
+      // Send welcome email to new user
+      try {
+        await emailService.sendWelcomeEmail(user.email, user.firstName || user.displayName || 'Client');
+      } catch (emailError) {
+        console.error('❌ Error sending welcome email:', emailError);
+      }
+
+      // Notify admin of new user registration
+      if (notificationService) {
+        try {
+          await notificationService.notifyUserRegistration(user.id);
+          await notificationService.createDefaultPreferences(user.id);
+        } catch (notifError) {
+          console.error('❌ Error sending registration notification:', notifError);
+        }
+      }
     }
 
     res.json({
@@ -291,32 +333,83 @@ router.put('/profile', firebaseAuth, [
 // @route   POST /api/auth/change-password
 // @desc    Change user password
 // @access  Private
-router.post('/change-password', firebaseAuth, [
+router.post('/change-password', authLimiter, firebaseAuth, [
   body('currentPassword').notEmpty().withMessage('Mot de passe actuel requis'),
-  body('newPassword').isLength({ min: 6 }).withMessage('Le nouveau mot de passe doit contenir au moins 6 caractères')
+  body('newPassword').isLength({ min: 8 }).withMessage('Le nouveau mot de passe doit contenir au moins 8 caractères')
+    .matches(/[A-Z]/).withMessage('Le mot de passe doit contenir au moins une majuscule')
+    .matches(/[0-9]/).withMessage('Le mot de passe doit contenir au moins un chiffre')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
         error: 'Données invalides',
-        details: errors.array() 
+        details: errors.array()
       });
     }
 
     const firebaseUid = req.firebaseUser.uid;
     const { currentPassword, newPassword } = req.body;
 
-    // Note: Password changes are handled by Firebase Auth on the frontend
-    // This endpoint is kept for consistency but may not be used
-    
+    // Verify current password via Firebase REST API (Admin SDK cannot verify passwords)
+    const firebaseUser = await admin.auth().getUser(firebaseUid);
+    const firebaseApiKey = process.env.FIREBASE_API_KEY;
+
+    if (!firebaseApiKey) {
+      return res.status(500).json({
+        success: false,
+        error: 'Configuration serveur incomplète'
+      });
+    }
+
+    try {
+      const fetch = (await import('node-fetch')).default;
+      const verifyResponse = await fetch(
+        `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${firebaseApiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: firebaseUser.email,
+            password: currentPassword,
+            returnSecureToken: false
+          })
+        }
+      );
+
+      if (!verifyResponse.ok) {
+        return res.status(401).json({
+          success: false,
+          error: 'Mot de passe actuel incorrect'
+        });
+      }
+    } catch (verifyError) {
+      return res.status(401).json({
+        success: false,
+        error: 'Mot de passe actuel incorrect'
+      });
+    }
+
+    // Current password verified — update to new password
+    await admin.auth().updateUser(firebaseUid, {
+      password: newPassword
+    });
+
     res.json({
       success: true,
       message: 'Mot de passe modifié avec succès'
     });
   } catch (error) {
-    console.error('❌ Error changing password:', error);
+    console.error('Error changing password:', error.code || error.message);
+
+    if (error.code === 'auth/weak-password') {
+      return res.status(400).json({
+        success: false,
+        error: 'Le mot de passe est trop faible.'
+      });
+    }
+
     res.status(500).json({
       success: false,
       error: 'Erreur lors du changement de mot de passe'
@@ -327,7 +420,7 @@ router.post('/change-password', firebaseAuth, [
 // @route   POST /api/auth/forgot-password
 // @desc    Send password reset email
 // @access  Public
-router.post('/forgot-password', [
+router.post('/forgot-password', passwordResetLimiter, [
   body('email').isEmail().withMessage('Email invalide')
 ], async (req, res) => {
   try {
@@ -388,7 +481,7 @@ router.post('/forgot-password', [
 // @route   POST /api/auth/reset-password
 // @desc    Reset password with token
 // @access  Public
-router.post('/reset-password', [
+router.post('/reset-password', passwordResetLimiter, [
   body('token').notEmpty().withMessage('Token requis'),
   body('password').isLength({ min: 6 }).withMessage('Le mot de passe doit contenir au moins 6 caractères')
 ], async (req, res) => {
@@ -443,7 +536,7 @@ router.post('/reset-password', [
 // @route   POST /api/auth/verify-email
 // @desc    Verify email address with token
 // @access  Public
-router.post('/verify-email', [
+router.post('/verify-email', verificationLimiter, [
   body('token').notEmpty().withMessage('Token requis')
 ], async (req, res) => {
   try {
@@ -508,7 +601,7 @@ router.post('/verify-email', [
 // @route   POST /api/auth/send-phone-verification
 // @desc    Send verification SMS for current phone number (required before any changes)
 // @access  Private
-router.post('/send-phone-verification', firebaseAuth, async (req, res) => {
+router.post('/send-phone-verification', verificationLimiter, firebaseAuth, async (req, res) => {
   try {
     const firebaseUid = req.firebaseUser.uid;
 
@@ -667,7 +760,7 @@ router.post('/verify-current-phone', firebaseAuth, [
 });
 
 // @route   POST /api/auth/set-new-phone
-// @desc    Set new phone number (requires previous verification)
+// @desc    Send verification OTP to new phone number (requires current phone verified)
 // @access  Private
 router.post('/set-new-phone', firebaseAuth, [
   body('newPhoneNumber').custom((value) => {
@@ -684,17 +777,12 @@ router.post('/set-new-phone', firebaseAuth, [
   })
 ], async (req, res) => {
   try {
-    console.log('🔍 Set new phone request received');
-    console.log('🔍 Request body:', req.body);
-    console.log('🔍 Firebase user:', req.firebaseUser?.uid);
-    
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log('❌ Validation errors:', errors.array());
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
         error: 'Numéro de téléphone invalide',
-        details: errors.array() 
+        details: errors.array()
       });
     }
 
@@ -718,12 +806,6 @@ router.post('/set-new-phone', firebaseAuth, [
       });
     }
 
-    // Check if the new phone number is different from the current one
-    console.log('🔍 Comparing phone numbers:');
-    console.log('🔍 Current phone:', user.phone);
-    console.log('🔍 New phone:', newPhoneNumber);
-    console.log('🔍 Are they equal?', user.phone === newPhoneNumber);
-    
     if (user.phone === newPhoneNumber) {
       return res.status(400).json({
         success: false,
@@ -731,49 +813,67 @@ router.post('/set-new-phone', firebaseAuth, [
       });
     }
 
-    // Update user's phone number
-    await user.update({ phone: newPhoneNumber });
-
-    // Update Firebase custom claims
-    try {
-      console.log('🔄 Attempting to update Firebase custom claims for UID:', firebaseUid);
-      console.log('📱 Phone number to set in Firebase:', newPhoneNumber);
-      
-      // Check if Firebase Admin is properly initialized
-      if (!admin.apps.length) {
-        throw new Error('Firebase Admin SDK not initialized');
+    // Check if new phone number is already used by another user
+    const existingUser = await User.findOne({
+      where: {
+        phone: newPhoneNumber,
+        id: { [Op.ne]: user.id }
       }
-      
-      await admin.auth().setCustomUserClaims(firebaseUid, {
-        phone: newPhoneNumber
-      });
-      
-      console.log('✅ Firebase custom claims updated with new phone number');
-      
-      // Verify the custom claims were set
-      const userRecord = await admin.auth().getUser(firebaseUid);
-      console.log('🔍 User custom claims after update:', userRecord.customClaims);
-      
-    } catch (firebaseError) {
-      console.error('❌ Error updating Firebase custom claims:', firebaseError);
-      console.error('❌ Error details:', {
-        code: firebaseError.code,
-        message: firebaseError.message,
-        stack: firebaseError.stack
+    });
+
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        error: 'Ce numéro de téléphone est déjà utilisé par un autre compte'
       });
     }
 
+    // Generate 6-digit verification code and send to NEW number
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // Save verification code with the new phone number
+    await VerificationCode.create({
+      userId: user.id,
+      email: user.email,
+      code: verificationCode,
+      type: 'phone_verification',
+      expiresAt: expiresAt,
+      newPhoneNumber: newPhoneNumber
+    });
+
+    // Send OTP to the new phone number
+    const smsResult = await smsService.sendVerificationSMS(
+      newPhoneNumber,
+      verificationCode
+    );
+
+    if (!smsResult.success) {
+      return res.status(500).json({
+        success: false,
+        error: process.env.NODE_ENV === 'development'
+          ? `Erreur SMS: ${smsResult.error}`
+          : 'Impossible d\'envoyer le SMS de vérification.',
+        debug: process.env.NODE_ENV === 'development' ? {
+          error: smsResult.error,
+          code: verificationCode
+        } : undefined
+      });
+    }
+
+    // Do NOT update phone yet — wait for verify-new-phone to confirm the OTP
     res.json({
       success: true,
-      message: 'Numéro de téléphone mis à jour avec succès',
-      phone: newPhoneNumber
+      message: 'Un code de vérification a été envoyé au nouveau numéro',
+      requiresVerification: true,
+      expiresIn: '10 minutes'
     });
 
   } catch (error) {
-    console.error('❌ Error setting new phone number:', error);
+    console.error('Error sending new phone verification:', error);
     res.status(500).json({
       success: false,
-      error: 'Erreur lors de la mise à jour du numéro de téléphone'
+      error: 'Erreur lors de l\'envoi du code de vérification'
     });
   }
 });
@@ -832,7 +932,7 @@ router.delete('/remove-phone', firebaseAuth, async (req, res) => {
 // @route   POST /api/auth/send-new-phone-verification
 // @desc    Send verification SMS to a new phone number (for first-time addition)
 // @access  Private
-router.post('/send-new-phone-verification', firebaseAuth, [
+router.post('/send-new-phone-verification', verificationLimiter, firebaseAuth, [
   body('newPhoneNumber').custom((value) => {
     if (!value || value.length < 10) {
       throw new Error('Le numéro de téléphone doit contenir au moins 10 chiffres');
@@ -1038,4 +1138,45 @@ router.post('/verify-new-phone', firebaseAuth, [
   }
 });
 
-module.exports = router;
+// @route   PUT /api/auth/notification-preferences
+// @desc    Update notification preferences
+// @access  Private
+router.put('/notification-preferences', firebaseAuth, async (req, res) => {
+  try {
+    const firebaseUid = req.firebaseUser.uid;
+    const user = await User.findOne({ where: { firebaseUid } });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
+    }
+
+    const { emailNotifications, marketingEmails, orderUpdates, newsletter } = req.body;
+
+    const preferences = {
+      ...(user.notificationSettings || {}),
+      emailNotifications: emailNotifications !== undefined ? Boolean(emailNotifications) : true,
+      marketingEmails: marketingEmails !== undefined ? Boolean(marketingEmails) : false,
+      orderUpdates: orderUpdates !== undefined ? Boolean(orderUpdates) : true,
+      newsletter: newsletter !== undefined ? Boolean(newsletter) : false
+    };
+
+    await user.update({ notificationSettings: preferences });
+
+    res.json({
+      success: true,
+      message: 'Préférences de notification mises à jour',
+      notificationSettings: preferences
+    });
+  } catch (error) {
+    console.error('Error updating notification preferences:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la mise à jour des préférences'
+    });
+  }
+});
+
+module.exports = { router, setNotificationService };

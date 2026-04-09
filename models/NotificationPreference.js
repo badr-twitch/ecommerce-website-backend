@@ -30,7 +30,8 @@ const NotificationPreference = sequelize.define('NotificationPreference', {
       'system_error',
       'system_performance',
       'payment_failure',
-      'refund_request'
+      'refund_request',
+      'membership'
     ),
     allowNull: false
   },

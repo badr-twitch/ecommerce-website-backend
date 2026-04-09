@@ -1,140 +1,196 @@
-// This is a mock payment processor service
-// In production, you would integrate with Stripe, PayPal, or another payment processor
+const Stripe = require('stripe');
 
 class PaymentProcessorService {
   constructor() {
-    // In production, this would be your payment processor configuration
-    this.processorType = process.env.PAYMENT_PROCESSOR || 'stripe';
-    this.apiKey = process.env.PAYMENT_PROCESSOR_API_KEY;
+    this.stripe = null;
   }
 
-  // Create a payment method token (this would call Stripe/PayPal API)
-  async createPaymentMethod(cardData) {
-    try {
-      // In production, this would make an API call to your payment processor
-      // For now, we'll simulate the process
-      
-      // Validate card data
-      this.validateCardData(cardData);
-      
-      // Simulate API call to payment processor
-      const processorResponse = await this.callPaymentProcessorAPI(cardData);
-      
-      return {
-        success: true,
-        processorId: processorResponse.id,
-        last4: cardData.cardNumber.slice(-4),
-        brand: this.detectCardBrand(cardData.cardNumber),
-        type: 'card',
-        expiry: cardData.expiry,
-        cardholderName: cardData.cardholderName
-      };
-    } catch (error) {
-      console.error('Payment processor error:', error);
-      throw new Error('Erreur lors de la création de la méthode de paiement');
+  // Lazy-init so the app can start without STRIPE_SECRET_KEY during development
+  getStripe() {
+    if (!this.stripe) {
+      const key = process.env.STRIPE_SECRET_KEY;
+      if (!key) {
+        throw new Error(
+          'STRIPE_SECRET_KEY is not set. Add it to your .env file. ' +
+          'Get your key from https://dashboard.stripe.com/apikeys'
+        );
+      }
+      this.stripe = new Stripe(key);
     }
+    return this.stripe;
   }
 
-  // Validate card data
-  validateCardData(cardData) {
-    const { cardNumber, expiry, cardholderName, cvv } = cardData;
-    
-    if (!cardNumber || cardNumber.replace(/\s/g, '').length !== 16) {
-      throw new Error('Numéro de carte invalide');
-    }
-    
-    if (!expiry || !/^\d{2}\/\d{2}$/.test(expiry)) {
-      throw new Error('Date d\'expiration invalide');
-    }
-    
-    if (!cardholderName || cardholderName.trim().length < 2) {
-      throw new Error('Nom du titulaire invalide');
-    }
-    
-    if (!cvv || !/^\d{3,4}$/.test(cvv)) {
-      throw new Error('Code CVV invalide');
-    }
-  }
+  // ---------------------------------------------------------------------------
+  // Customers
+  // ---------------------------------------------------------------------------
 
-  // Detect card brand based on number
-  detectCardBrand(cardNumber) {
-    if (!cardNumber) {
-      return 'unknown';
+  /**
+   * Create a Stripe Customer for a user (call once, on first checkout or registration).
+   * Returns the Stripe Customer object.
+   */
+  async getOrCreateCustomer(user) {
+    if (user.stripeCustomerId) {
+      return this.getStripe().customers.retrieve(user.stripeCustomerId);
     }
 
-    const number = cardNumber.replace(/\s/g, '');
-
-    if (/^4/.test(number)) return 'visa';
-    if (/^5[1-5]/.test(number)) return 'mastercard';
-    if (/^3[47]/.test(number)) return 'amex';
-    if (/^6/.test(number)) return 'discover';
-
-    return 'unknown';
-  }
-
-  // Simulate payment processor API call
-  async callPaymentProcessorAPI(cardData) {
-    if (!cardData?.cardNumber) {
-      throw new Error('Card number is required to create a payment method');
-    }
-    // In production, this would be a real API call
-    // For now, we'll simulate the response
-    
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        resolve({
-          id: `pm_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          type: 'card',
-          card: {
-            brand: this.detectCardBrand(cardData.cardNumber),
-            last4: cardData.cardNumber.slice(-4),
-            exp_month: parseInt(cardData.expiry.split('/')[0]),
-            exp_year: parseInt('20' + cardData.expiry.split('/')[1])
-          }
-        });
-      }, 1000); // Simulate network delay
+    const customer = await this.getStripe().customers.create({
+      email: user.email,
+      name: `${user.firstName} ${user.lastName}`,
+      metadata: { userId: user.id }
     });
+
+    // Persist the Stripe customer ID on the user record
+    await user.update({ stripeCustomerId: customer.id });
+
+    return customer;
   }
 
-  // Process a payment (for actual purchases)
-  async processPayment(paymentMethodId, amount, currency = 'MAD', metadata = {}) {
-    if (!paymentMethodId) {
-      throw new Error('Identifiant de méthode de paiement manquant');
+  // ---------------------------------------------------------------------------
+  // Payment Intents (for checkout)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Create a PaymentIntent for a given amount.
+   * @param {number} amount - Amount in the smallest currency unit (centimes for MAD/EUR)
+   * @param {string} currency - e.g. 'mad' or 'eur'
+   * @param {object} metadata - Order metadata
+   * @param {string} customerId - Stripe Customer ID (optional)
+   * @returns {object} { clientSecret, paymentIntentId }
+   */
+  async createPaymentIntent(amount, currency = 'mad', metadata = {}, customerId = null) {
+    const params = {
+      amount: Math.round(amount), // must be integer (centimes)
+      currency: currency.toLowerCase(),
+      metadata,
+      automatic_payment_methods: { enabled: true }
+    };
+
+    if (customerId) {
+      params.customer = customerId;
     }
 
-    if (!amount || Number(amount) <= 0) {
-      throw new Error('Montant de paiement invalide');
-    }
+    const paymentIntent = await this.getStripe().paymentIntents.create(params);
 
-    const normalizedAmount = Number(amount);
+    return {
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id
+    };
+  }
 
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        resolve({
-          success: true,
-          transactionId: `txn_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`,
-          amount: normalizedAmount,
-          currency,
-          status: 'succeeded',
-          paymentMethodId,
-          processedAt: new Date().toISOString(),
-          metadata,
-        });
-      }, 600);
+  /**
+   * Retrieve a PaymentIntent to verify its status.
+   */
+  async retrievePaymentIntent(paymentIntentId) {
+    return this.getStripe().paymentIntents.retrieve(paymentIntentId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Payment Methods (saved cards)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Create a SetupIntent so the frontend can collect card details for saving.
+   * @param {string} customerId - Stripe Customer ID
+   * @returns {object} { clientSecret }
+   */
+  async createSetupIntent(customerId) {
+    const setupIntent = await this.getStripe().setupIntents.create({
+      customer: customerId,
+      automatic_payment_methods: { enabled: true }
     });
+
+    return { clientSecret: setupIntent.client_secret };
   }
 
-  // Delete a payment method from the processor
-  async deletePaymentMethod(processorId) {
-    try {
-      // In production, this would call the payment processor's delete API
-      console.log(`Deleting payment method: ${processorId}`);
-      return { success: true };
-    } catch (error) {
-      console.error('Error deleting payment method:', error);
-      throw new Error('Erreur lors de la suppression de la méthode de paiement');
+  /**
+   * List payment methods attached to a Stripe Customer.
+   */
+  async listPaymentMethods(customerId) {
+    const methods = await this.getStripe().paymentMethods.list({
+      customer: customerId,
+      type: 'card'
+    });
+    return methods.data;
+  }
+
+  /**
+   * Detach (remove) a payment method from a customer.
+   */
+  async detachPaymentMethod(paymentMethodId) {
+    return this.getStripe().paymentMethods.detach(paymentMethodId);
+  }
+
+  /**
+   * Retrieve a single payment method by ID.
+   */
+  async retrievePaymentMethod(paymentMethodId) {
+    return this.getStripe().paymentMethods.retrieve(paymentMethodId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Off-session charges (memberships, renewals)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Charge a saved payment method off-session (server-initiated).
+   * Used for membership subscriptions and auto-renewals.
+   * @param {number} amount - Amount in smallest currency unit (centimes)
+   * @param {string} currency - e.g. 'mad'
+   * @param {string} paymentMethodId - Stripe PaymentMethod ID (pm_xxx)
+   * @param {string} customerId - Stripe Customer ID (cus_xxx)
+   * @param {object} metadata - Additional metadata
+   * @returns {object} { paymentIntentId, status, amount, currency }
+   */
+  async chargePaymentMethod(amount, currency, paymentMethodId, customerId, metadata = {}) {
+    const paymentIntent = await this.getStripe().paymentIntents.create({
+      amount: Math.round(amount),
+      currency: currency.toLowerCase(),
+      customer: customerId,
+      payment_method: paymentMethodId,
+      off_session: true,
+      confirm: true,
+      metadata
+    });
+
+    return {
+      paymentIntentId: paymentIntent.id,
+      status: paymentIntent.status,
+      amount: paymentIntent.amount,
+      currency: paymentIntent.currency
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Refunds
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Refund a payment (full or partial).
+   * @param {string} paymentIntentId
+   * @param {number|null} amount - null for full refund, or amount in centimes
+   */
+  async refundPayment(paymentIntentId, amount = null) {
+    const params = { payment_intent: paymentIntentId };
+    if (amount) {
+      params.amount = Math.round(amount);
     }
+    return this.getStripe().refunds.create(params);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Webhooks
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Verify and construct a Stripe webhook event.
+   */
+  constructWebhookEvent(rawBody, signature) {
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      throw new Error('STRIPE_WEBHOOK_SECRET is not set');
+    }
+    return this.getStripe().webhooks.constructEvent(rawBody, signature, webhookSecret);
   }
 }
 
-module.exports = new PaymentProcessorService(); 
+module.exports = new PaymentProcessorService();

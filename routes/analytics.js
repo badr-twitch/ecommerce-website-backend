@@ -17,6 +17,26 @@ const adminAuth = require('../middleware/adminAuth');
 // Apply Firebase auth and admin auth to all analytics routes
 router.use(firebaseAuth, adminAuth);
 
+// Helper: build a complete date range (YYYY-MM-DD) between two dates, inclusive
+function buildDateRange(startDate, endDate) {
+  const days = [];
+  const cursor = new Date(startDate);
+  cursor.setHours(0, 0, 0, 0);
+  const end = new Date(endDate);
+  end.setHours(0, 0, 0, 0);
+  while (cursor <= end) {
+    days.push(cursor.toISOString().slice(0, 10));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return days;
+}
+
+// Helper: normalise a date value (string or Date) to YYYY-MM-DD
+function toDateKey(val) {
+  if (!val) return null;
+  return typeof val === 'string' ? val.slice(0, 10) : new Date(val).toISOString().slice(0, 10);
+}
+
 // ==================== SALES ANALYTICS ====================
 
 // @route   GET /api/admin/analytics/sales
@@ -28,21 +48,26 @@ router.get('/sales', async (req, res) => {
     
     // Calculate date range
     let dateFilter = {};
+    let rangeStart, rangeEnd;
+    rangeEnd = new Date();
     if (startDate && endDate) {
+      rangeStart = new Date(startDate);
+      rangeEnd = new Date(endDate);
       dateFilter = {
         createdAt: {
-          [Op.between]: [new Date(startDate), new Date(endDate)]
+          [Op.between]: [rangeStart, rangeEnd]
         }
       };
     } else {
-      const daysAgo = new Date();
-      daysAgo.setDate(daysAgo.getDate() - parseInt(period));
+      rangeStart = new Date();
+      rangeStart.setDate(rangeStart.getDate() - parseInt(period));
       dateFilter = {
         createdAt: {
-          [Op.gte]: daysAgo
+          [Op.gte]: rangeStart
         }
       };
     }
+    const fullDateRange = buildDateRange(rangeStart, rangeEnd);
 
     // Total sales metrics
     const totalSales = await Order.findAll({
@@ -106,11 +131,21 @@ router.get('/sales', async (req, res) => {
           totalOrders: parseInt(totalSales[0]?.dataValues?.totalOrders || 0),
           averageOrderValue: parseFloat(totalSales[0]?.dataValues?.averageOrderValue || 0).toFixed(2)
         },
-        dailySales: dailySales.map(item => ({
-          date: item.dataValues.date,
-          revenue: parseFloat(item.dataValues.revenue || 0).toFixed(2),
-          orders: parseInt(item.dataValues.orders || 0)
-        })),
+        dailySales: (() => {
+          const byDate = {};
+          dailySales.forEach(item => {
+            const key = toDateKey(item.dataValues.date);
+            byDate[key] = {
+              revenue: parseFloat(item.dataValues.revenue || 0).toFixed(2),
+              orders: parseInt(item.dataValues.orders || 0)
+            };
+          });
+          return fullDateRange.map(date => ({
+            date,
+            revenue: byDate[date]?.revenue ?? '0.00',
+            orders: byDate[date]?.orders ?? 0
+          }));
+        })(),
         salesByStatus: salesByStatus.map(item => ({
           status: item.status,
           count: parseInt(item.dataValues.count || 0),
@@ -139,17 +174,28 @@ router.get('/sales', async (req, res) => {
 // @access  Admin
 router.get('/customers', async (req, res) => {
   try {
-    const { period = '30' } = req.query;
-    const daysAgo = new Date();
-    daysAgo.setDate(daysAgo.getDate() - parseInt(period));
+    const { period = '30', startDate, endDate } = req.query;
+
+    let rangeStart, rangeEnd;
+    rangeEnd = new Date();
+    if (startDate && endDate) {
+      rangeStart = new Date(startDate);
+      rangeEnd = new Date(endDate);
+    } else {
+      rangeStart = new Date();
+      rangeStart.setDate(rangeStart.getDate() - parseInt(period));
+    }
+    const daysAgo = rangeStart;
+    const customerDateFilter = startDate && endDate
+      ? { createdAt: { [Op.between]: [rangeStart, rangeEnd] } }
+      : { createdAt: { [Op.gte]: rangeStart } };
+    const customerDateRange = buildDateRange(rangeStart, rangeEnd);
 
     // Customer registration trends
     const registrationTrends = await User.findAll({
       where: {
         role: 'client',
-        createdAt: {
-          [Op.gte]: daysAgo
-        }
+        ...customerDateFilter
       },
       attributes: [
         [sequelize.fn('DATE', sequelize.col('createdAt')), 'date'],
@@ -163,9 +209,7 @@ router.get('/customers', async (req, res) => {
     const topCustomers = await Order.findAll({
       where: {
         status: { [Op.in]: ['delivered', 'shipped'] },
-        createdAt: {
-          [Op.gte]: daysAgo
-        }
+        ...customerDateFilter
       },
       include: [
         {
@@ -177,7 +221,7 @@ router.get('/customers', async (req, res) => {
       attributes: [
         'userId',
         [sequelize.fn('SUM', sequelize.col('totalAmount')), 'totalSpent'],
-        [sequelize.fn('COUNT', sequelize.col('id')), 'orderCount']
+        [sequelize.fn('COUNT', sequelize.col('Order.id')), 'orderCount']
       ],
       group: ['userId', 'user.id', 'user.firstName', 'user.lastName', 'user.email'],
       order: [[sequelize.fn('SUM', sequelize.col('totalAmount')), 'DESC']],
@@ -199,7 +243,7 @@ router.get('/customers', async (req, res) => {
       attributes: [
         'userId',
         [sequelize.fn('SUM', sequelize.col('totalAmount')), 'totalSpent'],
-        [sequelize.fn('COUNT', sequelize.col('id')), 'orderCount'],
+        [sequelize.fn('COUNT', sequelize.col('Order.id')), 'orderCount'],
         [sequelize.fn('AVG', sequelize.col('totalAmount')), 'averageOrderValue']
       ],
       group: ['userId', 'user.id', 'user.firstName', 'user.lastName', 'user.email'],
@@ -211,35 +255,38 @@ router.get('/customers', async (req, res) => {
     const customerTypes = await Order.findAll({
       where: {
         status: { [Op.in]: ['delivered', 'shipped'] },
-        createdAt: {
-          [Op.gte]: daysAgo
-        }
+        ...customerDateFilter
       },
       attributes: [
         'userId',
         [sequelize.fn('COUNT', sequelize.col('id')), 'orderCount']
       ],
       group: ['userId'],
-      having: sequelize.literal('COUNT(id) > 1')
+      having: sequelize.literal('COUNT("Order"."id") > 1')
     });
 
     const returningCustomers = customerTypes.length;
     const totalCustomers = await User.count({
       where: {
         role: 'client',
-        createdAt: {
-          [Op.gte]: daysAgo
-        }
+        ...customerDateFilter
       }
     });
 
     res.json({
       success: true,
       data: {
-        registrationTrends: registrationTrends.map(item => ({
-          date: item.dataValues.date,
-          registrations: parseInt(item.dataValues.registrations)
-        })),
+        registrationTrends: (() => {
+          const byDate = {};
+          registrationTrends.forEach(item => {
+            const key = toDateKey(item.dataValues.date);
+            byDate[key] = parseInt(item.dataValues.registrations || 0);
+          });
+          return customerDateRange.map(date => ({
+            date,
+            registrations: byDate[date] ?? 0
+          }));
+        })(),
         topCustomers: topCustomers.map(item => ({
           customer: {
             name: `${item.user?.firstName || ''} ${item.user?.lastName || ''}`,
@@ -348,7 +395,7 @@ router.get('/products', async (req, res) => {
         [sequelize.fn('SUM', sequelize.col('quantity')), 'totalSold'],
         [sequelize.fn('SUM', sequelize.literal('quantity * "product"."price"')), 'totalRevenue']
       ],
-      group: ['productId', 'product.id', 'product.name', 'product.price', 'product.category.name'],
+      group: ['productId', 'product.id', 'product.name', 'product.price', 'product->category.id', 'product->category.name'],
       order: [[sequelize.fn('SUM', sequelize.literal('quantity * "product"."price"')), 'DESC']]
     });
 
@@ -377,16 +424,7 @@ router.get('/products', async (req, res) => {
           model: Category,
           as: 'category',
           attributes: ['name']
-        }
-      ],
-      attributes: [
-        'id',
-        'name',
-        'price',
-        'stockQuantity',
-        [sequelize.fn('COUNT', sequelize.col('orderItems.id')), 'purchaseCount']
-      ],
-      include: [
+        },
         {
           model: OrderItem,
           as: 'orderItems',
@@ -406,9 +444,17 @@ router.get('/products', async (req, res) => {
           attributes: []
         }
       ],
+      attributes: [
+        'id',
+        'name',
+        'price',
+        'stockQuantity',
+        [sequelize.fn('COUNT', sequelize.col('orderItems.id')), 'purchaseCount']
+      ],
       group: ['Product.id', 'category.id', 'category.name'],
       order: [[sequelize.fn('COUNT', sequelize.col('orderItems.id')), 'DESC']],
-      limit: 10
+      limit: 10,
+      subQuery: false
     });
 
     res.json({

@@ -1,5 +1,5 @@
 const express = require('express');
-const { body, validationResult } = require('express-validator');
+const { validationResult } = require('express-validator');
 const PaymentMethod = require('../models/PaymentMethod');
 const User = require('../models/User');
 const firebaseAuth = require('../middleware/firebaseAuth');
@@ -7,22 +7,42 @@ const paymentProcessor = require('../services/paymentProcessor');
 
 const router = express.Router();
 
+// Helper: find user from Firebase UID
+async function findUser(req, res) {
+  const user = await User.findOne({ where: { firebaseUid: req.firebaseUser.uid } });
+  if (!user) {
+    res.status(404).json({ success: false, message: 'Utilisateur non trouvé' });
+    return null;
+  }
+  return user;
+}
+
 // @route   GET /api/payment-methods
-// @desc    Get user's payment methods
+// @desc    Get user's saved payment methods
 // @access  Private
 router.get('/', firebaseAuth, async (req, res) => {
   try {
-    const user = await User.findOne({ 
-      where: { firebaseUid: req.firebaseUser.uid } 
-    });
+    const user = await findUser(req, res);
+    if (!user) return;
 
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'Utilisateur non trouvé'
-      });
+    // If user has a Stripe customer, fetch fresh data from Stripe
+    if (user.stripeCustomerId) {
+      const stripeMethods = await paymentProcessor.listPaymentMethods(user.stripeCustomerId);
+
+      const paymentMethods = stripeMethods.map(pm => ({
+        id: pm.id,
+        type: 'card',
+        brand: pm.card.brand,
+        last4: pm.card.last4,
+        expiry: `${String(pm.card.exp_month).padStart(2, '0')}/${String(pm.card.exp_year).slice(-2)}`,
+        cardholderName: pm.billing_details.name || '',
+        isDefault: false
+      }));
+
+      return res.json({ success: true, paymentMethods });
     }
 
+    // Fallback: return from local DB (for cards saved before Stripe migration)
     const paymentMethods = await PaymentMethod.findAll({
       where: { userId: user.id, isActive: true },
       order: [['isDefault', 'DESC'], ['createdAt', 'DESC']]
@@ -32,219 +52,91 @@ router.get('/', firebaseAuth, async (req, res) => {
       success: true,
       paymentMethods: paymentMethods.map(pm => pm.toJSON())
     });
-
   } catch (error) {
     console.error('Error fetching payment methods:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Erreur lors de la récupération des méthodes de paiement' 
+      error: 'Erreur lors de la récupération des méthodes de paiement'
     });
   }
 });
 
-// @route   POST /api/payment-methods
-// @desc    Add new payment method
+// @route   POST /api/payment-methods/setup-intent
+// @desc    Create a Stripe SetupIntent so frontend can save a card
 // @access  Private
-router.post('/', [
-  firebaseAuth,
-  body('cardNumber').notEmpty().withMessage('Numéro de carte requis'),
-  body('expiry').matches(/^\d{2}\/\d{2}$/).withMessage('Format de date invalide (MM/YY)'),
-  body('cardholderName').notEmpty().withMessage('Nom du titulaire requis'),
-  body('cvv').isLength({ min: 3, max: 4 }).withMessage('Code CVV requis')
-], async (req, res) => {
+router.post('/setup-intent', firebaseAuth, async (req, res) => {
   try {
-    console.log('🔍 Payment Method - Request body:', req.body);
-    console.log('🔍 Payment Method - Validation errors:', validationResult(req).array());
-    
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      console.log('❌ Payment Method - Validation failed:', errors.array());
-      return res.status(400).json({ 
-        success: false,
-        error: 'Données invalides',
-        details: errors.array() 
-      });
-    }
+    const user = await findUser(req, res);
+    if (!user) return;
 
-    const user = await User.findOne({ 
-      where: { firebaseUid: req.firebaseUser.uid } 
-    });
+    // Ensure user has a Stripe customer
+    const customer = await paymentProcessor.getOrCreateCustomer(user);
 
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'Utilisateur non trouvé'
-      });
-    }
+    const { clientSecret } = await paymentProcessor.createSetupIntent(customer.id);
 
-    const { cardNumber, expiry, cardholderName, cvv } = req.body;
-
-    // Use payment processor to securely handle card data
-    const processorResult = await paymentProcessor.createPaymentMethod({
-      cardNumber,
-      expiry,
-      cardholderName,
-      cvv
-    });
-
-    // If this is the first payment method, make it default
-    const existingMethods = await PaymentMethod.count({
-      where: { userId: user.id, isActive: true }
-    });
-
-    // Store only safe information in database
-    const paymentMethod = await PaymentMethod.create({
-      userId: user.id,
-      processorId: processorResult.processorId,
-      processorType: 'stripe', // or your chosen processor
-      type: processorResult.type,
-      last4: processorResult.last4,
-      expiry: processorResult.expiry,
-      cardholderName: processorResult.cardholderName,
-      brand: processorResult.brand,
-      isDefault: existingMethods === 0
-    });
-
-    res.status(201).json({
-      success: true,
-      message: 'Méthode de paiement ajoutée avec succès',
-      paymentMethod: paymentMethod.toJSON()
-    });
-
+    res.json({ success: true, clientSecret });
   } catch (error) {
-    console.error('Error adding payment method:', error);
-    res.status(500).json({ 
+    console.error('Error creating setup intent:', error);
+    res.status(500).json({
       success: false,
-      error: error.message || 'Erreur lors de l\'ajout de la méthode de paiement' 
-    });
-  }
-});
-
-// @route   PUT /api/payment-methods/:id
-// @desc    Update payment method
-// @access  Private
-router.put('/:id', [
-  firebaseAuth,
-  body('type').notEmpty().withMessage('Type de carte requis'),
-  body('last4').isLength({ min: 4, max: 4 }).withMessage('Les 4 derniers chiffres sont requis'),
-  body('expiry').matches(/^\d{2}\/\d{2}$/).withMessage('Format de date invalide (MM/YY)'),
-  body('cardholderName').notEmpty().withMessage('Nom du titulaire requis')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Données invalides',
-        details: errors.array() 
-      });
-    }
-
-    const user = await User.findOne({ 
-      where: { firebaseUid: req.firebaseUser.uid } 
-    });
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'Utilisateur non trouvé'
-      });
-    }
-
-    const paymentMethod = await PaymentMethod.findOne({
-      where: { id: req.params.id, userId: user.id }
-    });
-
-    if (!paymentMethod) {
-      return res.status(404).json({
-        success: false,
-        message: 'Méthode de paiement non trouvée'
-      });
-    }
-
-    const { type, last4, expiry, cardholderName } = req.body;
-
-    await paymentMethod.update({
-      type,
-      last4,
-      expiry,
-      cardholderName
-    });
-
-    res.json({
-      success: true,
-      message: 'Méthode de paiement mise à jour avec succès',
-      paymentMethod: paymentMethod.toJSON()
-    });
-
-  } catch (error) {
-    console.error('Error updating payment method:', error);
-    res.status(500).json({ 
-      success: false,
-      error: 'Erreur lors de la mise à jour de la méthode de paiement' 
+      error: error.message || 'Erreur lors de la création du setup intent'
     });
   }
 });
 
 // @route   DELETE /api/payment-methods/:id
-// @desc    Delete payment method
+// @desc    Remove a saved payment method
 // @access  Private
 router.delete('/:id', firebaseAuth, async (req, res) => {
   try {
-    const user = await User.findOne({ 
-      where: { firebaseUid: req.firebaseUser.uid } 
-    });
+    const user = await findUser(req, res);
+    if (!user) return;
 
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'Utilisateur non trouvé'
-      });
+    const { id } = req.params;
+
+    // Try to detach from Stripe first (id is a Stripe PaymentMethod ID like pm_xxx)
+    if (id.startsWith('pm_')) {
+      await paymentProcessor.detachPaymentMethod(id);
+      return res.json({ success: true, message: 'Méthode de paiement supprimée avec succès' });
     }
 
+    // Fallback: local DB record
     const paymentMethod = await PaymentMethod.findOne({
-      where: { id: req.params.id, userId: user.id }
+      where: { id, userId: user.id }
     });
 
     if (!paymentMethod) {
-      return res.status(404).json({
-        success: false,
-        message: 'Méthode de paiement non trouvée'
-      });
+      return res.status(404).json({ success: false, message: 'Méthode de paiement non trouvée' });
     }
 
-    const isDefault = paymentMethod.isDefault;
-
-    // Delete from payment processor first
     if (paymentMethod.processorId) {
-      await paymentProcessor.deletePaymentMethod(paymentMethod.processorId);
+      try {
+        await paymentProcessor.detachPaymentMethod(paymentMethod.processorId);
+      } catch (e) {
+        // Stripe method may already be detached
+        console.warn('Could not detach from Stripe:', e.message);
+      }
     }
 
-    // Then mark as inactive in our database
     await paymentMethod.update({ isActive: false });
 
-    // If we deleted the default method, set the first remaining one as default
-    if (isDefault) {
+    // If deleted the default, promote the next one
+    if (paymentMethod.isDefault) {
       const nextDefault = await PaymentMethod.findOne({
         where: { userId: user.id, isActive: true },
         order: [['createdAt', 'ASC']]
       });
-
       if (nextDefault) {
         await nextDefault.update({ isDefault: true });
       }
     }
 
-    res.json({
-      success: true,
-      message: 'Méthode de paiement supprimée avec succès'
-    });
-
+    res.json({ success: true, message: 'Méthode de paiement supprimée avec succès' });
   } catch (error) {
     console.error('Error deleting payment method:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Erreur lors de la suppression de la méthode de paiement' 
+      error: 'Erreur lors de la suppression de la méthode de paiement'
     });
   }
 });
@@ -254,49 +146,41 @@ router.delete('/:id', firebaseAuth, async (req, res) => {
 // @access  Private
 router.put('/:id/default', firebaseAuth, async (req, res) => {
   try {
-    const user = await User.findOne({ 
-      where: { firebaseUid: req.firebaseUser.uid } 
-    });
+    const user = await findUser(req, res);
+    if (!user) return;
 
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'Utilisateur non trouvé'
+    // If user has Stripe customer, update default payment method there
+    if (user.stripeCustomerId && req.params.id.startsWith('pm_')) {
+      await paymentProcessor.getStripe().customers.update(user.stripeCustomerId, {
+        invoice_settings: { default_payment_method: req.params.id }
       });
+      return res.json({ success: true, message: 'Méthode de paiement par défaut mise à jour' });
     }
 
-    // Remove default from all payment methods
+    // Fallback: local DB
     await PaymentMethod.update(
       { isDefault: false },
       { where: { userId: user.id, isActive: true } }
     );
 
-    // Set the selected one as default
     const paymentMethod = await PaymentMethod.findOne({
       where: { id: req.params.id, userId: user.id, isActive: true }
     });
 
     if (!paymentMethod) {
-      return res.status(404).json({
-        success: false,
-        message: 'Méthode de paiement non trouvée'
-      });
+      return res.status(404).json({ success: false, message: 'Méthode de paiement non trouvée' });
     }
 
     await paymentMethod.update({ isDefault: true });
 
-    res.json({
-      success: true,
-      message: 'Méthode de paiement par défaut mise à jour'
-    });
-
+    res.json({ success: true, message: 'Méthode de paiement par défaut mise à jour' });
   } catch (error) {
     console.error('Error setting default payment method:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Erreur lors de la mise à jour de la méthode de paiement par défaut' 
+      error: 'Erreur lors de la mise à jour de la méthode de paiement par défaut'
     });
   }
 });
 
-module.exports = router; 
+module.exports = router;

@@ -90,4 +90,16 @@ const firebaseAuth = async (req, res, next) => {
   }
 };
 
-module.exports = firebaseAuth; 
+const requireEmailVerified = (req, res, next) => {
+  if (!req.firebaseUser || !req.firebaseUser.email_verified) {
+    return res.status(403).json({
+      error: 'Adresse email non vérifiée. Veuillez vérifier votre email avant de continuer.'
+    });
+  }
+  next();
+};
+
+// Export firebaseAuth as default for backwards compatibility with all existing route files
+// requireEmailVerified is available as a named property
+module.exports = firebaseAuth;
+module.exports.requireEmailVerified = requireEmailVerified;

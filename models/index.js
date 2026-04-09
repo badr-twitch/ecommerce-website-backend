@@ -33,6 +33,12 @@ const Review = require('./Review')(sequelize); // Call the function with sequeli
 const StockHistory = require('./StockHistory');
 const Notification = require('./Notification');
 const NotificationPreference = require('./NotificationPreference');
+const OrderStatusLog = require('./OrderStatusLog');
+const OrderShare = require('./OrderShare');
+const OrderNote = require('./OrderNote');
+const MembershipTransaction = require('./MembershipTransaction');
+const MembershipGift = require('./MembershipGift');
+const AdminAuditLog = require('./AdminAuditLog');
 
 // Define associations
 User.hasMany(Order, { foreignKey: 'userId', as: 'orders' });
@@ -90,6 +96,36 @@ Notification.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 User.hasMany(NotificationPreference, { foreignKey: 'userId', as: 'notificationPreferences' });
 NotificationPreference.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
+// Order status audit trail
+Order.hasMany(OrderStatusLog, { foreignKey: 'orderId', as: 'statusLogs' });
+OrderStatusLog.belongsTo(Order, { foreignKey: 'orderId', as: 'order' });
+User.hasMany(OrderStatusLog, { foreignKey: 'changedBy', as: 'statusChanges' });
+OrderStatusLog.belongsTo(User, { foreignKey: 'changedBy', as: 'changedByUser' });
+
+// Order sharing
+Order.hasMany(OrderShare, { foreignKey: 'orderId', as: 'shares' });
+OrderShare.belongsTo(Order, { foreignKey: 'orderId', as: 'order' });
+
+// Membership transactions
+User.hasMany(MembershipTransaction, { foreignKey: 'userId', as: 'membershipTransactions' });
+MembershipTransaction.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+// Order notes
+Order.hasMany(OrderNote, { foreignKey: 'orderId', as: 'notes' });
+OrderNote.belongsTo(Order, { foreignKey: 'orderId', as: 'order' });
+User.hasMany(OrderNote, { foreignKey: 'userId', as: 'orderNotes' });
+OrderNote.belongsTo(User, { foreignKey: 'userId', as: 'author' });
+
+// Membership gifts
+User.hasMany(MembershipGift, { foreignKey: 'senderUserId', as: 'sentGifts' });
+MembershipGift.belongsTo(User, { foreignKey: 'senderUserId', as: 'sender' });
+User.hasMany(MembershipGift, { foreignKey: 'redeemedByUserId', as: 'receivedGifts' });
+MembershipGift.belongsTo(User, { foreignKey: 'redeemedByUserId', as: 'redeemer' });
+
+// Admin audit log associations
+User.hasMany(AdminAuditLog, { foreignKey: 'adminId', as: 'auditLogs' });
+AdminAuditLog.belongsTo(User, { foreignKey: 'adminId', as: 'admin' });
+
 // Self-referential association for categories
 Category.hasMany(Category, { 
   as: 'children', 
@@ -112,5 +148,11 @@ module.exports = {
   Review,
   StockHistory,
   Notification,
-  NotificationPreference
+  NotificationPreference,
+  OrderStatusLog,
+  OrderShare,
+  OrderNote,
+  MembershipTransaction,
+  MembershipGift,
+  AdminAuditLog
 }; 

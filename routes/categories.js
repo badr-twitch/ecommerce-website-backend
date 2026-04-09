@@ -37,11 +37,14 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
+    // Support lookup by UUID or by slug
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    const whereClause = isUUID
+      ? { id, isActive: true }
+      : { slug: id, isActive: true };
+
     const category = await Category.findOne({
-      where: { 
-        id,
-        isActive: true 
-      },
+      where: whereClause,
       include: [
         {
           model: Category,

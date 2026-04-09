@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Confirmation de commande - UMOD</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .logo {
+            font-size: 28px;
+            font-weight: bold;
+            color: #2563eb;
+            margin-bottom: 10px;
+        }
+        .title {
+            color: #1f2937;
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+        .order-badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #2563eb, #7c3aed);
+            color: white;
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+        .content {
+            margin-bottom: 30px;
+        }
+        .items-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        .items-table th {
+            background-color: #f9fafb;
+            padding: 12px;
+            text-align: left;
+            font-size: 13px;
+            color: #6b7280;
+            border-bottom: 2px solid #e5e7eb;
+        }
+        .items-table td {
+            padding: 12px;
+            border-bottom: 1px solid #f3f4f6;
+            font-size: 14px;
+        }
+        .totals {
+            background-color: #f9fafb;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .totals-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            font-size: 14px;
+        }
+        .totals-row.total {
+            border-top: 2px solid #e5e7eb;
+            margin-top: 10px;
+            padding-top: 12px;
+            font-size: 18px;
+            font-weight: bold;
+            color: #1f2937;
+        }
+        .address-box {
+            background-color: #f9fafb;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px 0;
+        }
+        .address-box h3 {
+            margin-top: 0;
+            color: #374151;
+            font-size: 14px;
+        }
+        .address-box p {
+            margin: 4px 0;
+            font-size: 14px;
+            color: #4b5563;
+        }
+        .button {
+            display: inline-block;
+            background: linear-gradient(135deg, #2563eb, #7c3aed);
+            color: white;
+            padding: 15px 30px;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        .button-container {
+            text-align: center;
+            margin: 30px 0;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e5e7eb;
+            color: #6b7280;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">UMOD</div>
+            <h1 class="title">Merci pour votre commande !</h1>
+            <div class="order-badge">Commande {{orderNumber}}</div>
+        </div>
+
+        <div class="content">
+            <p>Bonjour <strong>{{customerName}}</strong>,</p>
+
+            <p>Votre commande a bien été confirmée. Voici le récapitulatif :</p>
+
+            <table class="items-table">
+                <thead>
+                    <tr>
+                        <th>Produit</th>
+                        <th>Qté</th>
+                        <th>Prix</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{itemsRows}}
+                </tbody>
+            </table>
+
+            <div class="totals">
+                <div class="totals-row">
+                    <span>Sous-total</span>
+                    <span>{{subtotal}} DH</span>
+                </div>
+                <div class="totals-row">
+                    <span>Livraison</span>
+                    <span>{{shippingAmount}} DH</span>
+                </div>
+                <div class="totals-row">
+                    <span>TVA (20%)</span>
+                    <span>{{taxAmount}} DH</span>
+                </div>
+                <div class="totals-row total">
+                    <span>Total</span>
+                    <span>{{totalAmount}} DH</span>
+                </div>
+            </div>
+
+            <div class="address-box">
+                <h3>Adresse de livraison</h3>
+                <p>{{shippingAddress}}</p>
+                <p>{{shippingCity}}, {{shippingPostalCode}}</p>
+                <p>{{shippingCountry}}</p>
+            </div>
+
+            <div class="button-container">
+                <a href="{{ordersUrl}}" class="button">Suivre ma commande</a>
+            </div>
+
+            <p>Nous vous enverrons un email lorsque votre commande sera expédiée.</p>
+        </div>
+
+        <div class="footer">
+            <p>Pour toute question, contactez-nous à <strong>support@umod.ma</strong></p>
+            <p>&copy; 2024 UMOD. Tous droits réservés.</p>
+        </div>
+    </div>
+</body>
+</html>

@@ -14,6 +14,7 @@ const ShippingAddress = require('../models/ShippingAddress');
 const PaymentMethod = require('../models/PaymentMethod');
 const StockHistory = require('../models/StockHistory');
 const inventoryService = require('../services/inventoryService');
+const { deleteProductImages, deleteCategoryImage } = require('../services/storageCleanupService');
 
 // Import models index to ensure associations are loaded
 require('../models/index');
@@ -21,6 +22,7 @@ require('../models/index');
 // Import middleware
 const firebaseAuth = require('../middleware/firebaseAuth');
 const adminAuth = require('../middleware/adminAuth');
+const auditLog = require('../middleware/auditLog');
 
 // Apply Firebase auth and admin auth to all admin routes
 router.use(firebaseAuth, adminAuth);
@@ -47,10 +49,17 @@ router.get('/dashboard', async (req, res) => {
     const totalRevenue = completedOrders.reduce((sum, order) => sum + parseFloat(order.totalAmount), 0);
     const averageOrderValue = completedOrders.length > 0 ? totalRevenue / completedOrders.length : 0;
     
-    // Real revenue trends (last 7 days)
+    // Build a full 7-day date array (YYYY-MM-DD strings, oldest first)
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-    
+
+    const last7Days = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (6 - i));
+      return d.toISOString().slice(0, 10);
+    });
+
+    // Real revenue trends (last 7 days)
     const revenueData = await Order.findAll({
       where: {
         status: { [Op.in]: ['delivered', 'shipped'] },
@@ -65,7 +74,15 @@ router.get('/dashboard', async (req, res) => {
       group: [sequelize.fn('DATE', sequelize.col('createdAt'))],
       order: [[sequelize.fn('DATE', sequelize.col('createdAt')), 'ASC']]
     });
-    
+
+    const revenueByDate = {};
+    revenueData.forEach(item => {
+      const key = typeof item.dataValues.date === 'string'
+        ? item.dataValues.date
+        : new Date(item.dataValues.date).toISOString().slice(0, 10);
+      revenueByDate[key] = parseFloat(item.dataValues.revenue || 0);
+    });
+
     // Real user registration trends (last 7 days)
     const userRegistrationData = await User.findAll({
       where: {
@@ -80,6 +97,14 @@ router.get('/dashboard', async (req, res) => {
       ],
       group: [sequelize.fn('DATE', sequelize.col('createdAt'))],
       order: [[sequelize.fn('DATE', sequelize.col('createdAt')), 'ASC']]
+    });
+
+    const registrationsByDate = {};
+    userRegistrationData.forEach(item => {
+      const key = typeof item.dataValues.date === 'string'
+        ? item.dataValues.date
+        : new Date(item.dataValues.date).toISOString().slice(0, 10);
+      registrationsByDate[key] = parseInt(item.dataValues.registrations || 0);
     });
     
     // Real order status distribution
@@ -162,6 +187,115 @@ router.get('/dashboard', async (req, res) => {
       limit: 10
     });
 
+    // === TODAY'S STATS ===
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const yesterdayStart = new Date(todayStart);
+    yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+
+    const todayOrders = await Order.findAll({
+      where: { createdAt: { [Op.gte]: todayStart } },
+      attributes: ['totalAmount', 'status']
+    });
+    const todayRevenue = todayOrders
+      .filter(o => ['delivered', 'shipped', 'confirmed', 'processing'].includes(o.status))
+      .reduce((sum, o) => sum + parseFloat(o.totalAmount), 0);
+    const todayOrderCount = todayOrders.length;
+
+    const yesterdayOrders = await Order.findAll({
+      where: { createdAt: { [Op.gte]: yesterdayStart, [Op.lt]: todayStart } },
+      attributes: ['totalAmount', 'status']
+    });
+    const yesterdayRevenue = yesterdayOrders
+      .filter(o => ['delivered', 'shipped', 'confirmed', 'processing'].includes(o.status))
+      .reduce((sum, o) => sum + parseFloat(o.totalAmount), 0);
+    const yesterdayOrderCount = yesterdayOrders.length;
+
+    // This week vs last week
+    const thisWeekStart = new Date(todayStart);
+    thisWeekStart.setDate(thisWeekStart.getDate() - thisWeekStart.getDay() + 1); // Monday
+    const lastWeekStart = new Date(thisWeekStart);
+    lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+
+    const thisWeekRevenue = await Order.sum('totalAmount', {
+      where: {
+        createdAt: { [Op.gte]: thisWeekStart },
+        status: { [Op.in]: ['delivered', 'shipped', 'confirmed', 'processing'] }
+      }
+    }) || 0;
+
+    const lastWeekRevenue = await Order.sum('totalAmount', {
+      where: {
+        createdAt: { [Op.gte]: lastWeekStart, [Op.lt]: thisWeekStart },
+        status: { [Op.in]: ['delivered', 'shipped', 'confirmed', 'processing'] }
+      }
+    }) || 0;
+
+    // Pending actions
+    const pendingOrders = await Order.count({ where: { status: 'pending' } });
+    const confirmedOrders = await Order.count({ where: { status: 'confirmed' } });
+    const processingOrders = await Order.count({ where: { status: 'processing' } });
+
+    // New users today
+    const newUsersToday = await User.count({
+      where: { role: 'client', createdAt: { [Op.gte]: todayStart } }
+    });
+
+    // Recent activity feed (last 20 events)
+    const recentActivity = [];
+
+    // Recent new orders (last 24h)
+    const recentNewOrders = await Order.findAll({
+      where: { createdAt: { [Op.gte]: yesterdayStart } },
+      include: [{ model: User, as: 'user', attributes: ['firstName', 'lastName'] }],
+      order: [['createdAt', 'DESC']],
+      limit: 10,
+      attributes: ['id', 'orderNumber', 'totalAmount', 'status', 'createdAt']
+    });
+    recentNewOrders.forEach(o => {
+      recentActivity.push({
+        type: 'new_order',
+        message: `Nouvelle commande #${o.orderNumber} de ${o.user?.firstName || 'Client'} ${o.user?.lastName || ''} — ${parseFloat(o.totalAmount).toFixed(2)} DH`,
+        timestamp: o.createdAt,
+        orderId: o.id
+      });
+    });
+
+    // Recent new users (last 24h)
+    const recentNewUsers = await User.findAll({
+      where: { role: 'client', createdAt: { [Op.gte]: yesterdayStart } },
+      order: [['createdAt', 'DESC']],
+      limit: 5,
+      attributes: ['id', 'firstName', 'lastName', 'email', 'createdAt']
+    });
+    recentNewUsers.forEach(u => {
+      recentActivity.push({
+        type: 'new_user',
+        message: `Nouvel utilisateur: ${u.firstName || ''} ${u.lastName || ''} (${u.email})`,
+        timestamp: u.createdAt,
+        userId: u.id
+      });
+    });
+
+    // Low stock alerts
+    const lowStockItems = await Product.findAll({
+      where: { stockQuantity: { [Op.lte]: 5 }, isActive: true },
+      attributes: ['id', 'name', 'stockQuantity'],
+      limit: 5,
+      order: [['stockQuantity', 'ASC']]
+    });
+    lowStockItems.forEach(p => {
+      recentActivity.push({
+        type: 'low_stock',
+        message: `Stock faible: ${p.name} — ${p.stockQuantity} restant(s)`,
+        timestamp: new Date(),
+        productId: p.id
+      });
+    });
+
+    // Sort activity by timestamp
+    recentActivity.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
     res.json({
       success: true,
       data: {
@@ -176,14 +310,29 @@ router.get('/dashboard', async (req, res) => {
           orderGrowthRate: parseFloat(orderGrowthRate),
           lowStockProducts
         },
+        today: {
+          revenue: todayRevenue.toFixed(2),
+          orders: todayOrderCount,
+          yesterdayRevenue: yesterdayRevenue.toFixed(2),
+          yesterdayOrders: yesterdayOrderCount,
+          thisWeekRevenue: parseFloat(thisWeekRevenue).toFixed(2),
+          lastWeekRevenue: parseFloat(lastWeekRevenue).toFixed(2),
+          newUsers: newUsersToday
+        },
+        pendingActions: {
+          pendingOrders,
+          confirmedOrders,
+          processingOrders,
+          lowStockProducts
+        },
         charts: {
-          revenueTrend: revenueData.map(item => ({
-            date: item.dataValues.date,
-            revenue: parseFloat(item.dataValues.revenue || 0)
+          revenueTrend: last7Days.map(date => ({
+            date,
+            revenue: revenueByDate[date] || 0
           })),
-          userRegistrations: userRegistrationData.map(item => ({
-            date: item.dataValues.date,
-            registrations: parseInt(item.dataValues.registrations)
+          userRegistrations: last7Days.map(date => ({
+            date,
+            registrations: registrationsByDate[date] || 0
           })),
           orderStatusDistribution: orderStatusDistribution.map(item => ({
             status: item.status,
@@ -198,7 +347,8 @@ router.get('/dashboard', async (req, res) => {
           totalSold: parseInt(item.dataValues.totalSold || 0),
           totalRevenue: parseFloat(item.dataValues.totalRevenue || 0).toFixed(2)
         })),
-        recentOrders
+        recentOrders,
+        recentActivity: recentActivity.slice(0, 15)
       }
     });
 
@@ -254,24 +404,16 @@ router.get('/products', async (req, res) => {
 // @route   POST /api/admin/products
 // @desc    Create a new product
 // @access  Admin
-router.post('/products', [
+router.post('/products', auditLog('CREATE', 'product', null, (req) => ({ name: req.body.name })), [
   body('name').trim().isLength({ min: 2, max: 100 }).withMessage('Le nom doit contenir entre 2 et 100 caractères'),
   body('description').trim().isLength({ min: 10 }).withMessage('La description doit contenir au moins 10 caractères'),
   body('price').isFloat({ min: 0 }).withMessage('Le prix doit être un nombre positif'),
   body('stockQuantity').isInt({ min: 0 }).withMessage('Le stock doit être un nombre entier positif'),
   body('categoryId').isUUID().withMessage('Catégorie invalide'),
-  body('imageUrl').optional().custom((value) => {
-    if (value && value.trim() !== '') {
-      // Check if it's a valid URL
-      try {
-        new URL(value);
-        return true;
-      } catch {
-        throw new Error('URL d\'image invalide');
-      }
-    }
-    return true;
-  })
+  body('imageUrl').optional().isString(),
+  body('mainImage').optional().isString(),
+  body('images').optional().isArray(),
+  body('images.*').optional().isString()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -283,7 +425,13 @@ router.post('/products', [
       });
     }
 
-    const product = await Product.create(req.body);
+    // Map imageUrl to mainImage for backward compatibility
+    const data = { ...req.body };
+    if (data.imageUrl && !data.mainImage) {
+      data.mainImage = data.imageUrl;
+    }
+
+    const product = await Product.create(data);
 
     // Get product with category
     const productWithCategory = await Product.findByPk(product.id, {
@@ -308,24 +456,16 @@ router.post('/products', [
 // @route   PUT /api/admin/products/:id
 // @desc    Update a product
 // @access  Admin
-router.put('/products/:id', [
+router.put('/products/:id', auditLog('UPDATE', 'product', req => req.params.id), [
   body('name').optional().trim().isLength({ min: 2, max: 100 }).withMessage('Le nom doit contenir entre 2 et 100 caractères'),
   body('description').optional().trim().isLength({ min: 10 }).withMessage('La description doit contenir au moins 10 caractères'),
   body('price').optional().isFloat({ min: 0 }).withMessage('Le prix doit être un nombre positif'),
   body('stockQuantity').optional().isInt({ min: 0 }).withMessage('Le stock doit être un nombre entier positif'),
   body('categoryId').optional().isUUID().withMessage('Catégorie invalide'),
-  body('imageUrl').optional().custom((value) => {
-    if (value && value.trim() !== '') {
-      // Check if it's a valid URL
-      try {
-        new URL(value);
-        return true;
-      } catch {
-        throw new Error('URL d\'image invalide');
-      }
-    }
-    return true;
-  })
+  body('imageUrl').optional().isString(),
+  body('mainImage').optional().isString(),
+  body('images').optional().isArray(),
+  body('images.*').optional().isString()
 ], async (req, res) => {
   try {
     console.log('🔍 Product update request body:', req.body);
@@ -347,8 +487,13 @@ router.put('/products/:id', [
       });
     }
 
+    // Map imageUrl to mainImage for backward compatibility
+    if (req.body.imageUrl && !req.body.mainImage) {
+      req.body.mainImage = req.body.imageUrl;
+    }
+
     console.log('🔍 Updating product with data:', req.body);
-    
+
     // Clean up date fields - convert empty strings to null
     const updateData = { ...req.body };
     if (updateData.saleStartDate === '' || updateData.saleStartDate === 'Invalid date') {
@@ -399,7 +544,7 @@ router.put('/products/:id', [
 // @route   DELETE /api/admin/products/:id
 // @desc    Delete a product
 // @access  Admin
-router.delete('/products/:id', async (req, res) => {
+router.delete('/products/:id', auditLog('DELETE', 'product', req => req.params.id), async (req, res) => {
   try {
     const product = await Product.findByPk(req.params.id);
     if (!product) {
@@ -408,6 +553,9 @@ router.delete('/products/:id', async (req, res) => {
         error: 'Produit non trouvé'
       });
     }
+
+    // Clean up Firebase Storage images
+    await deleteProductImages(product);
 
     await product.destroy();
 
@@ -591,6 +739,9 @@ router.delete('/categories/:id', async (req, res) => {
       });
     }
 
+    // Clean up Firebase Storage image
+    await deleteCategoryImage(category);
+
     await category.destroy();
 
     res.json({
@@ -751,61 +902,12 @@ router.get('/orders/:id', async (req, res) => {
   }
 });
 
-// @route   PUT /api/admin/orders/:id/status
-// @desc    Update order status with comments
-// @access  Admin
-router.put('/orders/:id/status', [
-  body('status').isIn(['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded']).withMessage('Statut invalide'),
-  body('comment').optional().trim().isLength({ max: 500 }).withMessage('Le commentaire ne doit pas dépasser 500 caractères')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        error: 'Statut invalide',
-        details: errors.array()
-      });
-    }
-
-    const order = await Order.findByPk(req.params.id);
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        error: 'Commande non trouvée'
-      });
-    }
-
-    const oldStatus = order.status;
-    await order.update({ 
-      status: req.body.status,
-      statusComment: req.body.comment || null,
-      statusUpdatedAt: new Date()
-    });
-
-    // TODO: Send email notification to customer about status change
-    // await sendOrderStatusEmail(order.user.email, order, oldStatus, req.body.status);
-
-    res.json({
-      success: true,
-      message: 'Statut de commande mis à jour avec succès',
-      data: order
-    });
-
-  } catch (error) {
-    console.error('❌ Update order status error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Erreur lors de la mise à jour du statut'
-    });
-  }
-});
-
 // ==================== BULK ORDER OPERATIONS ====================
 
 // @route   PUT /api/admin/orders/bulk/status
 // @desc    Update status for multiple orders
 // @access  Admin
+// NOTE: must be registered BEFORE /orders/:id/status to avoid :id catching "bulk"
 router.put('/orders/bulk/status', [
   body('orderIds').isArray({ min: 1 }).withMessage('Au moins une commande doit être sélectionnée'),
   body('orderIds.*').isUUID().withMessage('ID de commande invalide'),
@@ -858,6 +960,132 @@ router.put('/orders/bulk/status', [
       success: false,
       error: 'Erreur lors de la mise à jour en masse des commandes'
     });
+  }
+});
+
+// @route   PUT /api/admin/orders/:id/status
+// @desc    Update order status with comments
+// @access  Admin
+router.put('/orders/:id/status', auditLog('UPDATE_STATUS', 'order', req => req.params.id, (req) => ({ newStatus: req.body.status })), [
+  body('status').isIn(['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded']).withMessage('Statut invalide'),
+  body('comment').optional().trim().isLength({ max: 500 }).withMessage('Le commentaire ne doit pas dépasser 500 caractères')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Statut invalide',
+        details: errors.array()
+      });
+    }
+
+    const order = await Order.findByPk(req.params.id);
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: 'Commande non trouvée'
+      });
+    }
+
+    const oldStatus = order.status;
+    await order.update({
+      status: req.body.status,
+      statusComment: req.body.comment || null,
+      statusUpdatedAt: new Date()
+    });
+
+    // TODO: Send email notification to customer about status change
+    // await sendOrderStatusEmail(order.user.email, order, oldStatus, req.body.status);
+
+    res.json({
+      success: true,
+      message: 'Statut de commande mis à jour avec succès',
+      data: order
+    });
+
+  } catch (error) {
+    console.error('❌ Update order status error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la mise à jour du statut'
+    });
+  }
+});
+
+// @route   POST /api/admin/orders/:id/refund
+// @desc    Process full or partial refund for an order
+// @access  Admin
+router.post('/orders/:id/refund', auditLog('REFUND', 'order', req => req.params.id, (req) => ({ amount: req.body.amount, reason: req.body.reason })), [
+  body('amount').optional().isFloat({ min: 0.01 }).withMessage('Montant invalide'),
+  body('reason').trim().isLength({ min: 1, max: 500 }).withMessage('La raison est requise (max 500 caractères)')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, error: 'Données invalides', details: errors.array() });
+    }
+
+    const order = await Order.findByPk(req.params.id, {
+      include: [{ model: OrderItem, as: 'orderItems', include: [{ model: Product, as: 'product' }] }]
+    });
+
+    if (!order) {
+      return res.status(404).json({ success: false, error: 'Commande non trouvée' });
+    }
+
+    if (['cancelled', 'refunded'].includes(order.status)) {
+      return res.status(400).json({ success: false, error: 'Cette commande est déjà annulée ou remboursée' });
+    }
+
+    const refundAmount = req.body.amount || parseFloat(order.totalAmount);
+    const isPartial = req.body.amount && req.body.amount < parseFloat(order.totalAmount);
+
+    // Attempt Stripe refund if payment exists
+    if (order.paymentTransactionId) {
+      try {
+        const paymentProcessor = require('../services/paymentProcessor');
+        await paymentProcessor.refundPayment(order.paymentTransactionId, isPartial ? Math.round(refundAmount * 100) : undefined);
+      } catch (stripeErr) {
+        console.error('Stripe refund error:', stripeErr);
+        return res.status(500).json({ success: false, error: 'Erreur lors du remboursement Stripe: ' + stripeErr.message });
+      }
+    }
+
+    const oldStatus = order.status;
+    await order.update({
+      status: 'refunded',
+      paymentStatus: isPartial ? 'partially_refunded' : 'refunded',
+      statusComment: `Remboursement ${isPartial ? 'partiel' : 'total'} de ${refundAmount} DH — ${req.body.reason}`
+    });
+
+    // Restore stock
+    for (const item of order.orderItems || []) {
+      if (item.product) {
+        await item.product.increment('stock', { by: item.quantity });
+      }
+    }
+
+    // Log status change
+    const OrderStatusLog = require('../models/OrderStatusLog');
+    await OrderStatusLog.create({
+      orderId: order.id,
+      previousStatus: oldStatus,
+      newStatus: 'refunded',
+      changedBy: req.user.id,
+      changedByRole: 'admin',
+      reason: `${isPartial ? 'Remboursement partiel' : 'Remboursement total'}: ${req.body.reason}`,
+      metadata: { refundAmount, isPartial }
+    });
+
+    res.json({
+      success: true,
+      message: `Remboursement ${isPartial ? 'partiel' : 'total'} de ${refundAmount} DH effectué`,
+      data: { refundAmount, isPartial }
+    });
+  } catch (error) {
+    console.error('Admin refund error:', error);
+    res.status(500).json({ success: false, error: 'Erreur lors du remboursement' });
   }
 });
 
@@ -1018,7 +1246,7 @@ router.get('/users', async (req, res) => {
 // @route   PUT /api/admin/users/:id/status
 // @desc    Toggle user active status
 // @access  Admin
-router.put('/users/:id/status', async (req, res) => {
+router.put('/users/:id/status', auditLog('UPDATE_STATUS', 'user', req => req.params.id, (req) => ({ isActive: req.body.isActive })), async (req, res) => {
   try {
     const user = await User.findByPk(req.params.id);
     if (!user) {
@@ -1056,7 +1284,7 @@ router.put('/users/:id/status', async (req, res) => {
 // @route   PUT /api/admin/users/:id/role
 // @desc    Change user role (client/admin)
 // @access  Admin
-router.put('/users/:id/role', [
+router.put('/users/:id/role', auditLog('UPDATE_ROLE', 'user', req => req.params.id, (req) => ({ newRole: req.body.role })), [
   body('role').isIn(['client', 'admin']).withMessage('Rôle invalide')
 ], async (req, res) => {
   try {
@@ -1279,4 +1507,336 @@ router.put('/inventory/reorder-point/:productId', [
   }
 });
 
-module.exports = router; 
+// ==================== ORDER NOTES ====================
+
+const OrderNote = require('../models/OrderNote');
+
+// @route   GET /api/admin/orders/:id/notes
+// @desc    Get all notes for an order
+// @access  Admin
+router.get('/orders/:id/notes', async (req, res) => {
+  try {
+    const notes = await OrderNote.findAll({
+      where: { orderId: req.params.id },
+      include: [{ model: User, as: 'author', attributes: ['firstName', 'lastName'] }],
+      order: [['createdAt', 'DESC']]
+    });
+    res.json({ success: true, data: notes });
+  } catch (error) {
+    console.error('Get order notes error:', error);
+    res.status(500).json({ success: false, error: 'Erreur lors de la récupération des notes' });
+  }
+});
+
+// @route   POST /api/admin/orders/:id/notes
+// @desc    Add a note to an order
+// @access  Admin
+router.post('/orders/:id/notes', [
+  body('content').trim().isLength({ min: 1, max: 2000 }).withMessage('Contenu requis (max 2000 caractères)'),
+  body('isInternal').optional().isBoolean()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, error: 'Données invalides', details: errors.array() });
+    }
+
+    const order = await Order.findByPk(req.params.id);
+    if (!order) {
+      return res.status(404).json({ success: false, error: 'Commande non trouvée' });
+    }
+
+    const note = await OrderNote.create({
+      orderId: req.params.id,
+      userId: req.user.id,
+      content: req.body.content,
+      isInternal: req.body.isInternal !== false
+    });
+
+    const noteWithAuthor = await OrderNote.findByPk(note.id, {
+      include: [{ model: User, as: 'author', attributes: ['firstName', 'lastName'] }]
+    });
+
+    res.status(201).json({ success: true, data: noteWithAuthor });
+  } catch (error) {
+    console.error('Create order note error:', error);
+    res.status(500).json({ success: false, error: 'Erreur lors de la création de la note' });
+  }
+});
+
+// @route   DELETE /api/admin/orders/:orderId/notes/:noteId
+// @desc    Delete an order note
+// @access  Admin
+router.delete('/orders/:orderId/notes/:noteId', async (req, res) => {
+  try {
+    const note = await OrderNote.findOne({
+      where: { id: req.params.noteId, orderId: req.params.orderId }
+    });
+    if (!note) {
+      return res.status(404).json({ success: false, error: 'Note non trouvée' });
+    }
+    await note.destroy();
+    res.json({ success: true, message: 'Note supprimée' });
+  } catch (error) {
+    console.error('Delete order note error:', error);
+    res.status(500).json({ success: false, error: 'Erreur lors de la suppression de la note' });
+  }
+});
+
+// ==================== MEMBERSHIP MANAGEMENT ====================
+
+const MembershipTransaction = require('../models/MembershipTransaction');
+const membershipService = require('../services/membershipService');
+
+// GET /admin/memberships/stats — Dashboard stats
+router.get('/memberships/stats', async (req, res) => {
+  try {
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    const [activeCount, cancelledCount, expiredCount, newThisMonth, revenue] = await Promise.all([
+      User.count({ where: { membershipStatus: 'active' } }),
+      User.count({ where: { membershipStatus: 'cancelled' } }),
+      User.count({ where: { membershipStatus: 'expired' } }),
+      User.count({
+        where: {
+          membershipStatus: { [Op.in]: ['active', 'cancelled'] },
+          membershipActivatedAt: { [Op.gte]: thirtyDaysAgo }
+        }
+      }),
+      MembershipTransaction.sum('amount', {
+        where: {
+          type: { [Op.in]: ['subscription', 'renewal'] },
+          status: 'succeeded',
+          createdAt: { [Op.gte]: thirtyDaysAgo }
+        }
+      })
+    ]);
+
+    const totalMembers = activeCount + cancelledCount;
+    const churnRate = totalMembers > 0 ? Math.round((cancelledCount / totalMembers) * 100) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        active: activeCount,
+        cancelled: cancelledCount,
+        expired: expiredCount,
+        newThisMonth,
+        monthlyRevenue: revenue || 0,
+        churnRate
+      }
+    });
+  } catch (error) {
+    console.error('Admin membership stats error:', error);
+    res.status(500).json({ success: false, error: 'Erreur lors de la récupération des statistiques' });
+  }
+});
+
+// GET /admin/memberships/users — Paginated member list
+router.get('/memberships/users', async (req, res) => {
+  try {
+    const { page = 1, limit = 20, status, search } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    const where = {};
+    if (status && status !== 'all') {
+      where.membershipStatus = status;
+    } else {
+      where.membershipStatus = { [Op.ne]: 'none' };
+    }
+
+    if (search) {
+      where[Op.or] = [
+        { firstName: { [Op.iLike]: `%${search}%` } },
+        { lastName: { [Op.iLike]: `%${search}%` } },
+        { email: { [Op.iLike]: `%${search}%` } }
+      ];
+    }
+
+    const { count, rows } = await User.findAndCountAll({
+      where,
+      attributes: [
+        'id', 'firstName', 'lastName', 'email',
+        'membershipStatus', 'membershipPlan', 'membershipActivatedAt',
+        'membershipExpiresAt', 'membershipAutoRenew', 'membershipPrice',
+        'membershipCurrency', 'loyaltyPoints', 'loyaltyTier'
+      ],
+      order: [['membershipActivatedAt', 'DESC']],
+      limit: parseInt(limit),
+      offset
+    });
+
+    res.json({
+      success: true,
+      data: {
+        members: rows,
+        total: count,
+        page: parseInt(page),
+        totalPages: Math.ceil(count / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Admin membership users error:', error);
+    res.status(500).json({ success: false, error: 'Erreur lors de la récupération des membres' });
+  }
+});
+
+// PUT /admin/memberships/users/:userId — Manually manage a user's membership
+router.put('/memberships/users/:userId', async (req, res) => {
+  try {
+    const user = await User.findByPk(req.params.userId);
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'Utilisateur introuvable' });
+    }
+
+    const { action, daysToExtend } = req.body;
+
+    switch (action) {
+      case 'activate': {
+        const activationDate = new Date();
+        const expirationDate = new Date(activationDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+        await user.update({
+          membershipStatus: 'active',
+          membershipPlan: user.membershipPlan || 'umod-prime-monthly',
+          membershipActivatedAt: activationDate,
+          membershipExpiresAt: expirationDate,
+          membershipAutoRenew: false
+        });
+        await MembershipTransaction.create({
+          userId: user.id,
+          type: 'subscription',
+          amount: 0,
+          currency: 'MAD',
+          status: 'succeeded',
+          planId: user.membershipPlan,
+          billingPeriodStart: activationDate,
+          billingPeriodEnd: expirationDate,
+          metadata: { adminAction: true, adminId: req.user?.id || req.firebaseUser?.uid }
+        });
+        break;
+      }
+
+      case 'extend': {
+        const days = parseInt(daysToExtend) || 30;
+        const currentExpiry = user.membershipExpiresAt ? new Date(user.membershipExpiresAt) : new Date();
+        const newExpiry = new Date(currentExpiry.getTime() + days * 24 * 60 * 60 * 1000);
+        await user.update({
+          membershipStatus: 'active',
+          membershipExpiresAt: newExpiry
+        });
+        await MembershipTransaction.create({
+          userId: user.id,
+          type: 'renewal',
+          amount: 0,
+          currency: 'MAD',
+          status: 'succeeded',
+          planId: user.membershipPlan,
+          billingPeriodStart: new Date(),
+          billingPeriodEnd: newExpiry,
+          metadata: { adminAction: true, adminId: req.user?.id || req.firebaseUser?.uid, daysExtended: days }
+        });
+        break;
+      }
+
+      case 'cancel': {
+        await membershipService.cancel(user);
+        break;
+      }
+
+      case 'expire': {
+        await membershipService.expireMembership(user);
+        break;
+      }
+
+      default:
+        return res.status(400).json({ success: false, error: 'Action invalide' });
+    }
+
+    await user.reload();
+    res.json({
+      success: true,
+      message: `Action "${action}" effectuée avec succès`,
+      data: {
+        membershipStatus: user.membershipStatus,
+        membershipExpiresAt: user.membershipExpiresAt,
+        membershipAutoRenew: user.membershipAutoRenew
+      }
+    });
+  } catch (error) {
+    console.error('Admin membership action error:', error);
+    res.status(500).json({ success: false, error: error.message || 'Erreur lors de l\'action' });
+  }
+});
+
+// GET /admin/memberships/transactions — Paginated transaction log
+router.get('/memberships/transactions', async (req, res) => {
+  try {
+    const { page = 1, limit = 30, type, userId } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    const where = {};
+    if (type) where.type = type;
+    if (userId) where.userId = userId;
+
+    const { count, rows } = await MembershipTransaction.findAndCountAll({
+      where,
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'firstName', 'lastName', 'email']
+      }],
+      order: [['createdAt', 'DESC']],
+      limit: parseInt(limit),
+      offset
+    });
+
+    res.json({
+      success: true,
+      data: {
+        transactions: rows,
+        total: count,
+        page: parseInt(page),
+        totalPages: Math.ceil(count / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Admin membership transactions error:', error);
+    res.status(500).json({ success: false, error: 'Erreur lors de la récupération des transactions' });
+  }
+});
+
+// ============================================
+// AUDIT LOG ENDPOINTS
+// ============================================
+
+router.get('/audit-logs', async (req, res) => {
+  try {
+    const { limit = 50, offset = 0, action, resource, adminId } = req.query;
+    const AdminAuditLog = require('../models/AdminAuditLog');
+
+    const where = {};
+    if (action) where.action = action;
+    if (resource) where.resource = resource;
+    if (adminId) where.adminId = adminId;
+
+    const { count, rows } = await AdminAuditLog.findAndCountAll({
+      where,
+      include: [{ model: User, as: 'admin', attributes: ['id', 'firstName', 'lastName', 'email'] }],
+      order: [['createdAt', 'DESC']],
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+
+    res.json({
+      success: true,
+      data: rows,
+      pagination: { total: count, limit: parseInt(limit), offset: parseInt(offset) }
+    });
+  } catch (error) {
+    console.error('Error fetching audit logs:', error.message);
+    res.status(500).json({ success: false, error: 'Erreur lors de la récupération des logs' });
+  }
+});
+
+module.exports = router;

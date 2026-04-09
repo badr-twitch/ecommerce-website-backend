@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const { Op } = require('sequelize');
+const sequelize = require('../config/database');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const Review = require('../models/Review');
@@ -9,6 +10,7 @@ const firebaseAuth = require('../middleware/firebaseAuth');
 const adminAuth = require('../middleware/adminAuth');
 
 const router = express.Router();
+const { writeLimiter } = require('../middleware/rateLimiter');
 
 // @route   GET /api/products
 // @desc    Get all products with filtering and pagination
@@ -23,7 +25,8 @@ router.get('/', [
   query('sort').optional().isIn(['name', 'price', 'createdAt', 'rating']).withMessage('Tri invalide'),
   query('order').optional().isIn(['asc', 'desc']).withMessage('Ordre invalide'),
   query('featured').optional().isBoolean().withMessage('Featured doit être un booléen'),
-  query('onSale').optional().isBoolean().withMessage('OnSale doit être un booléen')
+  query('onSale').optional().isBoolean().withMessage('OnSale doit être un booléen'),
+  query('brand').optional().trim()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -44,7 +47,8 @@ router.get('/', [
       sort = 'createdAt',
       order = 'desc',
       featured,
-      onSale
+      onSale,
+      brand
     } = req.query;
 
     // Build where clause
@@ -83,6 +87,10 @@ router.get('/', [
 
     if (onSale !== undefined) {
       whereClause.isOnSale = onSale;
+    }
+
+    if (brand) {
+      whereClause.brand = brand;
     }
 
     // Debug logging
@@ -133,6 +141,28 @@ router.get('/', [
       error: 'Erreur lors de la récupération des produits',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
+  }
+});
+
+// @route   GET /api/products/brands
+// @desc    Get list of distinct brands
+// @access  Public
+router.get('/brands', async (req, res) => {
+  try {
+    const brands = await Product.findAll({
+      attributes: [[sequelize.fn('DISTINCT', sequelize.col('brand')), 'brand']],
+      where: { isActive: true, brand: { [Op.ne]: null, [Op.ne]: '' } },
+      order: [['brand', 'ASC']],
+      raw: true
+    });
+
+    res.json({
+      success: true,
+      brands: brands.map(b => b.brand).filter(Boolean)
+    });
+  } catch (error) {
+    console.error('Error fetching brands:', error);
+    res.status(500).json({ error: 'Erreur lors de la récupération des marques' });
   }
 });
 
@@ -316,7 +346,7 @@ router.delete('/:id', firebaseAuth, adminAuth, async (req, res) => {
 // @route   POST /api/products/:id/reviews
 // @desc    Add a review to a product
 // @access  Private
-router.post('/:id/reviews', firebaseAuth, [
+router.post('/:id/reviews', writeLimiter, firebaseAuth, [
   body('rating').isInt({ min: 1, max: 5 }).withMessage('Note invalide'),
   body('title').optional().trim().isLength({ max: 200 }),
   body('comment').optional().trim().isLength({ max: 1000 })

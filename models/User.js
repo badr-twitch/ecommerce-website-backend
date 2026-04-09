@@ -213,6 +213,29 @@ const User = sequelize.define('User', {
     type: DataTypes.JSONB,
     allowNull: true,
     comment: 'Snapshot of benefits at time of subscription'
+  },
+  loyaltyPoints: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+    allowNull: false,
+    comment: 'Accumulated loyalty points'
+  },
+  loyaltyTier: {
+    type: DataTypes.ENUM('bronze', 'silver', 'gold', 'platinum'),
+    defaultValue: 'bronze',
+    allowNull: false,
+    comment: 'Loyalty tier based on total points earned'
+  },
+  totalLoyaltyPointsEarned: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+    allowNull: false,
+    comment: 'Total points ever earned (determines tier, not decreased by redemptions)'
+  },
+  stripeCustomerId: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    comment: 'Stripe Customer ID for payment processing'
   }
 }, {
   tableName: 'users',

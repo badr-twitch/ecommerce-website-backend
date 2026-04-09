@@ -1,4 +1,4 @@
-const { sequelize } = require('../config/database');
+const sequelize = require('../config/database');
 const { User, Product, Order, OrderItem, Category } = require('../models');
 const { v4: uuidv4 } = require('uuid');
 
@@ -43,6 +43,34 @@ const STREET_NAMES = [
   'Rue de la République', 'Place du Capitole', 'Rue d\'Alsace-Lorraine', 'Avenue des États-Unis', 'Rue de la Pomme'
 ];
 
+/** Fisher–Yates shuffle (in place). */
+function shuffleInPlace(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/**
+ * Random Date within one local calendar day among the last 7 days.
+ * dayIndex 0 = oldest day (today minus 6 days, 00:00–23:59:59),
+ * dayIndex 6 = today from 00:00:00 up to `now`.
+ */
+function randomDateInLastSevenCalendarDays(now, dayIndex) {
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+
+  const dayStart = new Date(todayStart);
+  dayStart.setDate(dayStart.getDate() - (6 - dayIndex));
+
+  const end = dayIndex === 6 ? new Date(now) : new Date(dayStart.getTime() + 24 * 60 * 60 * 1000 - 1);
+  const t0 = dayStart.getTime();
+  const t1 = end.getTime();
+  if (t1 <= t0) return new Date(now);
+  return new Date(t0 + Math.random() * (t1 - t0));
+}
+
 const createSampleOrders = async () => {
   try {
     console.log('🔄 Starting to create 100 realistic sample orders for the last 7 days...');
@@ -66,10 +94,17 @@ const createSampleOrders = async () => {
 
     console.log(`✅ Found ${users.length} users and ${products.length} products`);
 
-    // Generate 100 orders for the last 7 days
+    // Generate 100 orders spread across the last 7 calendar days (varied date/time each)
     const orders = [];
     const now = new Date();
-    const sevenDaysAgo = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+
+    // ~14–15 orders per day (100 total), shuffled so sequence is not day-blocked
+    const daySlots = [];
+    for (let d = 0; d < 7; d++) {
+      const count = d < 2 ? 15 : 14; // 2*15 + 5*14 = 100
+      for (let k = 0; k < count; k++) daySlots.push(d);
+    }
+    shuffleInPlace(daySlots);
 
     // Order status distribution for realistic patterns
     const statusDistribution = {
@@ -90,12 +125,11 @@ const createSampleOrders = async () => {
     const shippingMethods = ['Standard', 'Express', 'Colissimo', 'Chronopost'];
     const shippingMethodWeights = [0.50, 0.25, 0.20, 0.05];
 
-    console.log('📦 Creating 100 realistic orders...');
+    console.log('📦 Creating 100 realistic orders (last 7 calendar days, random time each)...');
 
     for (let i = 1; i <= 100; i++) {
-      // Generate random date within last 7 days (more recent orders are more likely)
-      const randomDaysAgo = Math.pow(Math.random(), 2) * 7; // Square distribution for more recent bias
-      const orderDate = new Date(now.getTime() - (randomDaysAgo * 24 * 60 * 60 * 1000));
+      const dayIndex = daySlots[i - 1];
+      const orderDate = randomDateInLastSevenCalendarDays(now, dayIndex);
 
       // Select random status based on distribution
       const statusRandom = Math.random();
@@ -275,7 +309,7 @@ const createSampleOrders = async () => {
     }
 
     console.log('🎉 Sample orders created successfully!');
-    console.log(`📊 Created ${orders.length} realistic orders for the last 7 days`);
+    console.log(`📊 Created ${orders.length} realistic orders spread across the last 7 calendar days`);
     console.log('📈 Orders distributed across different statuses and payment methods');
     console.log('🔍 You can now test the bulk operations in the admin dashboard');
 

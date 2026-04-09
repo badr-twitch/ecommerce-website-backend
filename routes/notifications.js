@@ -3,6 +3,7 @@ const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const adminAuth = require('../middleware/adminAuth');
+const { adminActionLimiter } = require('../middleware/rateLimiter');
 
 // Initialize notification service (will be set by server.js)
 let notificationService;
@@ -80,6 +81,36 @@ router.get('/unread-count', firebaseAuth, checkNotificationService, async (req, 
   }
 });
 
+// Mark all notifications as read (MUST be before /:id/read to avoid Express matching "mark-all-read" as :id)
+router.put('/mark-all-read', firebaseAuth, checkNotificationService, async (req, res) => {
+  try {
+    const userId = req.firebaseUser.uid;
+
+    // Get user from database
+    const { User } = require('../models');
+    const user = await User.findOne({ where: { firebaseUid: userId } });
+
+    if (!user) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    }
+
+    const success = await notificationService.markAllAsRead(user.id);
+
+    if (success) {
+      res.json({
+        success: true,
+        message: 'Toutes les notifications marquées comme lues'
+      });
+    } else {
+      res.status(500).json({ error: 'Erreur lors du marquage des notifications' });
+    }
+
+  } catch (error) {
+    console.error('❌ Error marking all notifications as read:', error);
+    res.status(500).json({ error: 'Erreur lors du marquage des notifications' });
+  }
+});
+
 // Mark notification as read
 router.put('/:id/read', firebaseAuth, checkNotificationService, async (req, res) => {
   try {
@@ -89,7 +120,7 @@ router.put('/:id/read', firebaseAuth, checkNotificationService, async (req, res)
     // Get user from database
     const { User } = require('../models');
     const user = await User.findOne({ where: { firebaseUid: userId } });
-    
+
     if (!user) {
       return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
@@ -111,33 +142,38 @@ router.put('/:id/read', firebaseAuth, checkNotificationService, async (req, res)
   }
 });
 
-// Mark all notifications as read
-router.put('/mark-all-read', firebaseAuth, checkNotificationService, async (req, res) => {
+// Delete a notification
+router.delete('/:id', firebaseAuth, checkNotificationService, async (req, res) => {
   try {
+    const { id } = req.params;
     const userId = req.firebaseUser.uid;
 
-    // Get user from database
-    const { User } = require('../models');
+    const { User, Notification } = require('../models');
     const user = await User.findOne({ where: { firebaseUid: userId } });
-    
+
     if (!user) {
       return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
 
-    const success = await notificationService.markAllAsRead(user.id);
+    const { Op } = require('sequelize');
+    const deleted = await Notification.destroy({
+      where: {
+        id,
+        [Op.or]: [
+          { userId: user.id },
+          { userId: null }
+        ]
+      }
+    });
 
-    if (success) {
-      res.json({
-        success: true,
-        message: 'Toutes les notifications marquées comme lues'
-      });
+    if (deleted) {
+      res.json({ success: true, message: 'Notification supprimée' });
     } else {
-      res.status(500).json({ error: 'Erreur lors du marquage des notifications' });
+      res.status(404).json({ error: 'Notification non trouvée' });
     }
-
   } catch (error) {
-    console.error('❌ Error marking all notifications as read:', error);
-    res.status(500).json({ error: 'Erreur lors du marquage des notifications' });
+    console.error('❌ Error deleting notification:', error);
+    res.status(500).json({ error: 'Erreur lors de la suppression de la notification' });
   }
 });
 
@@ -208,10 +244,22 @@ router.put('/preferences', firebaseAuth, checkNotificationService, [
 // Admin routes
 router.get('/admin/all', firebaseAuth, adminAuth, checkNotificationService, async (req, res) => {
   try {
-    const { limit = 100, offset = 0 } = req.query;
+    const { limit = 50, offset = 0, type, priority, isRead, dateFrom, dateTo } = req.query;
     const { Notification } = require('../models');
+    const { Op } = require('sequelize');
 
-    const notifications = await Notification.findAll({
+    const where = {};
+    if (type) where.type = type;
+    if (priority) where.priority = priority;
+    if (isRead !== undefined) where.isRead = isRead === 'true';
+    if (dateFrom || dateTo) {
+      where.createdAt = {};
+      if (dateFrom) where.createdAt[Op.gte] = new Date(dateFrom);
+      if (dateTo) where.createdAt[Op.lte] = new Date(dateTo);
+    }
+
+    const { count, rows } = await Notification.findAndCountAll({
+      where,
       order: [['createdAt', 'DESC']],
       limit: parseInt(limit),
       offset: parseInt(offset)
@@ -219,7 +267,8 @@ router.get('/admin/all', firebaseAuth, adminAuth, checkNotificationService, asyn
 
     res.json({
       success: true,
-      data: notifications
+      data: rows,
+      pagination: { total: count, limit: parseInt(limit), offset: parseInt(offset) }
     });
 
   } catch (error) {
@@ -244,7 +293,8 @@ router.post('/admin/test', firebaseAuth, adminAuth, checkNotificationService, [
     'system_error',
     'system_performance',
     'payment_failure',
-    'refund_request'
+    'refund_request',
+    'membership'
   ]).withMessage('Type de notification invalide'),
   body('title').notEmpty().withMessage('Le titre est requis'),
   body('message').notEmpty().withMessage('Le message est requis'),
@@ -458,6 +508,132 @@ router.get('/admin/stats', firebaseAuth, adminAuth, checkNotificationService, as
   } catch (error) {
     console.error('❌ Error getting notification stats:', error);
     res.status(500).json({ error: 'Erreur lors de la récupération des statistiques' });
+  }
+});
+
+// Admin delete notification
+router.delete('/admin/:id', firebaseAuth, adminAuth, checkNotificationService, async (req, res) => {
+  try {
+    const { Notification } = require('../models');
+    const deleted = await Notification.destroy({ where: { id: req.params.id } });
+
+    if (deleted) {
+      res.json({ success: true, message: 'Notification supprimée' });
+    } else {
+      res.status(404).json({ error: 'Notification non trouvée' });
+    }
+  } catch (error) {
+    console.error('❌ Error deleting notification:', error);
+    res.status(500).json({ error: 'Erreur lors de la suppression' });
+  }
+});
+
+// Admin bulk delete
+router.post('/admin/bulk-delete', adminActionLimiter, firebaseAuth, adminAuth, checkNotificationService, [
+  body('ids').isArray({ min: 1 }).withMessage('Liste d\'IDs requise')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { Notification } = require('../models');
+    const { Op } = require('sequelize');
+    const deleted = await Notification.destroy({ where: { id: { [Op.in]: req.body.ids } } });
+
+    res.json({ success: true, message: `${deleted} notification(s) supprimée(s)`, data: { count: deleted } });
+  } catch (error) {
+    console.error('❌ Error bulk deleting notifications:', error);
+    res.status(500).json({ error: 'Erreur lors de la suppression' });
+  }
+});
+
+// Admin send notification to specific user
+router.post('/admin/send-to-user', firebaseAuth, adminAuth, checkNotificationService, [
+  body('userId').notEmpty().withMessage('ID utilisateur requis'),
+  body('type').notEmpty().withMessage('Type requis'),
+  body('title').notEmpty().withMessage('Titre requis'),
+  body('message').notEmpty().withMessage('Message requis'),
+  body('priority').optional().isIn(['low', 'medium', 'high', 'critical'])
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { userId, type, title, message, priority = 'medium', data = {} } = req.body;
+    const notification = await notificationService.createNotification({ userId, type, title, message, priority, data });
+
+    if (notification) {
+      res.json({ success: true, message: 'Notification envoyée', data: notification });
+    } else {
+      res.status(500).json({ error: 'Erreur lors de l\'envoi' });
+    }
+  } catch (error) {
+    console.error('❌ Error sending notification to user:', error);
+    res.status(500).json({ error: 'Erreur lors de l\'envoi de la notification' });
+  }
+});
+
+// Admin broadcast notification to all users
+router.post('/admin/broadcast', adminActionLimiter, firebaseAuth, adminAuth, checkNotificationService, [
+  body('type').notEmpty().withMessage('Type requis'),
+  body('title').notEmpty().withMessage('Titre requis'),
+  body('message').notEmpty().withMessage('Message requis'),
+  body('priority').optional().isIn(['low', 'medium', 'high', 'critical'])
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { type, title, message, priority = 'medium', data = {} } = req.body;
+    const { User } = require('../models');
+    const users = await User.findAll({ attributes: ['id'] });
+
+    let sent = 0;
+    for (const user of users) {
+      const notif = await notificationService.createNotification({ userId: user.id, type, title, message, priority, data });
+      if (notif) sent++;
+    }
+
+    // Also create an admin-level (no userId) notification
+    await notificationService.createNotification({ type, title, message, priority, data });
+
+    res.json({ success: true, message: `Notification envoyée à ${sent} utilisateur(s)`, data: { sent } });
+  } catch (error) {
+    console.error('❌ Error broadcasting notification:', error);
+    res.status(500).json({ error: 'Erreur lors de la diffusion' });
+  }
+});
+
+// Admin manual cleanup
+router.post('/admin/cleanup', firebaseAuth, adminAuth, checkNotificationService, async (req, res) => {
+  try {
+    const { Notification } = require('../models');
+    const { Op } = require('sequelize');
+    const now = new Date();
+
+    const expiredDeleted = await Notification.destroy({ where: { expiresAt: { [Op.lt]: now } } });
+    const ninetyDaysAgo = new Date(now - 90 * 24 * 60 * 60 * 1000);
+    const oldReadDeleted = await Notification.destroy({ where: { isRead: true, createdAt: { [Op.lt]: ninetyDaysAgo } } });
+    const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
+    const [archivedCount] = await Notification.update(
+      { isArchived: true },
+      { where: { isRead: false, isArchived: false, createdAt: { [Op.lt]: thirtyDaysAgo } } }
+    );
+
+    res.json({
+      success: true,
+      message: 'Nettoyage terminé',
+      data: { expiredDeleted, oldReadDeleted, archived: archivedCount }
+    });
+  } catch (error) {
+    console.error('❌ Error during cleanup:', error);
+    res.status(500).json({ error: 'Erreur lors du nettoyage' });
   }
 });
 
