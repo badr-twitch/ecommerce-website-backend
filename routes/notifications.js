@@ -4,6 +4,7 @@ const { body, validationResult } = require('express-validator');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const adminAuth = require('../middleware/adminAuth');
 const { adminActionLimiter } = require('../middleware/rateLimiter');
+const { validateId, validatePagination } = require('../middleware/validateInput');
 
 // Initialize notification service (will be set by server.js)
 let notificationService;
@@ -25,7 +26,7 @@ const checkNotificationService = (req, res, next) => {
 };
 
 // Get user notifications
-router.get('/', firebaseAuth, checkNotificationService, async (req, res) => {
+router.get('/', validatePagination, firebaseAuth, checkNotificationService, async (req, res) => {
   try {
     const { limit = 50, offset = 0 } = req.query;
     const userId = req.firebaseUser.uid;
@@ -112,7 +113,7 @@ router.put('/mark-all-read', firebaseAuth, checkNotificationService, async (req,
 });
 
 // Mark notification as read
-router.put('/:id/read', firebaseAuth, checkNotificationService, async (req, res) => {
+router.put('/:id/read', validateId, firebaseAuth, checkNotificationService, async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.firebaseUser.uid;
@@ -143,7 +144,7 @@ router.put('/:id/read', firebaseAuth, checkNotificationService, async (req, res)
 });
 
 // Delete a notification
-router.delete('/:id', firebaseAuth, checkNotificationService, async (req, res) => {
+router.delete('/:id', validateId, firebaseAuth, checkNotificationService, async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.firebaseUser.uid;

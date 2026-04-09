@@ -9,12 +9,28 @@ const socketIo = require('socket.io');
 // Load environment variables
 dotenv.config();
 
+const logger = require('./services/logger');
+
 // Validate required environment variables
 const requiredEnvVars = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'JWT_SECRET', 'FIREBASE_SERVICE_ACCOUNT'];
 const missingVars = requiredEnvVars.filter(v => !process.env[v]);
 if (missingVars.length > 0) {
-  console.error(`FATAL: Missing required environment variables: ${missingVars.join(', ')}`);
+  logger.error('Missing required environment variables', { vars: missingVars });
   process.exit(1);
+}
+
+// Production-only: validate secret strength and HTTPS URLs
+if (process.env.NODE_ENV === 'production') {
+  if (process.env.JWT_SECRET.length < 32) {
+    logger.error('JWT_SECRET must be at least 32 characters in production');
+    process.exit(1);
+  }
+  const frontendUrls = (process.env.FRONTEND_URL || '').split(',').map(s => s.trim());
+  const insecureUrls = frontendUrls.filter(u => u && !u.startsWith('https://'));
+  if (insecureUrls.length > 0) {
+    logger.error('FRONTEND_URL must use HTTPS in production', { insecureUrls });
+    process.exit(1);
+  }
 }
 
 // Initialize Firebase Admin SDK
@@ -25,7 +41,7 @@ let serviceAccount;
 try {
   serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 } catch (error) {
-  console.error('FATAL: Cannot parse FIREBASE_SERVICE_ACCOUNT');
+  logger.error('Cannot parse FIREBASE_SERVICE_ACCOUNT');
   process.exit(1);
 }
 
@@ -41,21 +57,17 @@ if (!admin.apps.length) {
       databaseURL: process.env.FIREBASE_DATABASE_URL,
       storageBucket: process.env.FIREBASE_STORAGE_BUCKET
     });
-    console.log('✅ Firebase Admin SDK initialized successfully');
-    
+    logger.info('Firebase Admin SDK initialized');
+
     // Test Firebase Admin functionality
-    try {
-      admin.auth().getUserByEmail('test@example.com')
-        .then(() => console.log('✅ Firebase Admin SDK is working correctly'))
-        .catch(() => console.log('⚠️ Firebase Admin SDK initialized but test failed'));
-    } catch (testError) {
-      console.log('⚠️ Firebase Admin SDK initialized but test failed:', testError.message);
-    }
+    admin.auth().getUserByEmail('test@example.com')
+      .then(() => logger.info('Firebase Admin SDK verified'))
+      .catch(() => logger.warn('Firebase Admin SDK initialized but verification test failed'));
   } catch (error) {
-    console.error('❌ Error initializing Firebase Admin:', error);
+    logger.error('Error initializing Firebase Admin', { error: error.message });
   }
 } else {
-  console.log('✅ Firebase Admin SDK already initialized');
+  logger.info('Firebase Admin SDK already initialized');
 }
 
 const app = express();
@@ -71,9 +83,32 @@ const io = socketIo(server, {
 const PORT = process.env.PORT || 5000;
 
 // Middleware
-app.use(helmet());
+
+// Trust reverse proxy (nginx/cloud LB) for correct req.ip and req.secure
+if (process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+}
+
+app.use(helmet({
+  hsts: process.env.NODE_ENV === 'production'
+    ? { maxAge: 63072000, includeSubDomains: true, preload: true }
+    : false,
+}));
+
+// Redirect HTTP to HTTPS in production
+if (process.env.NODE_ENV === 'production') {
+  app.use((req, res, next) => {
+    if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
+      return next();
+    }
+    res.redirect(301, `https://${req.headers.host}${req.url}`);
+  });
+}
+const botProtection = require('./middleware/botProtection');
+const progressivePenalty = require('./middleware/progressivePenalty');
 const { globalLimiter } = require('./middleware/rateLimiter');
-app.use(globalLimiter);
+
+// CORS must come first so rejection responses include CORS headers
 const allowedOrigins = process.env.FRONTEND_URL
   ? process.env.FRONTEND_URL.split(',').map(s => s.trim())
   : ['http://localhost:5173'];
@@ -87,6 +122,11 @@ app.use(cors({
   credentials: true
 }));
 
+// Abuse protection: bot detection → progressive penalty → global rate limit
+app.use(botProtection);
+app.use(progressivePenalty);
+app.use(globalLimiter);
+
 // Stripe webhook needs raw body — must be before express.json()
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   const paymentProcessor = require('./services/paymentProcessor');
@@ -99,7 +139,7 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
     switch (event.type) {
       case 'payment_intent.succeeded': {
         const pi = event.data.object;
-        console.log(`✅ Stripe: Payment ${pi.id} succeeded`);
+        logger.info('Stripe payment succeeded', { paymentId: pi.id });
         // Update order payment status if order already exists
         const order = await Order.findOne({ where: { paymentTransactionId: pi.id } });
         if (order && order.paymentStatus !== 'paid') {
@@ -109,7 +149,7 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
       }
       case 'payment_intent.payment_failed': {
         const pi = event.data.object;
-        console.log(`❌ Stripe: Payment ${pi.id} failed`);
+        logger.warn('Stripe payment failed', { paymentId: pi.id });
         const order = await Order.findOne({ where: { paymentTransactionId: pi.id } });
         if (order) {
           await order.update({ paymentStatus: 'failed' });
@@ -117,12 +157,12 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
         break;
       }
       default:
-        console.log(`Stripe webhook: ${event.type}`);
+        logger.debug('Stripe webhook event', { type: event.type });
     }
 
     res.json({ received: true });
   } catch (err) {
-    console.error('Stripe webhook error:', err.message);
+    logger.error('Stripe webhook error', { error: err.message });
     res.status(400).json({ error: `Webhook Error: ${err.message}` });
   }
 });
@@ -132,13 +172,9 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 const sanitizeBody = require('./middleware/sanitize');
 app.use(sanitizeBody);
 
-// Request logging middleware (no body in production to prevent leaking sensitive data)
-app.use((req, res, next) => {
-  if (process.env.NODE_ENV === 'development') {
-    console.log(`🔍 ${req.method} ${req.path}`);
-  }
-  next();
-});
+// Security event logging (auth failures, rate limits, errors, auth successes)
+const securityLogger = require('./middleware/securityLogger');
+app.use(securityLogger);
 
 // Database configuration
 const sequelize = require('./config/database');
@@ -159,19 +195,19 @@ const VerificationCode = require('./models/VerificationCode');
 // Test database connection and sync models
 sequelize.authenticate()
   .then(() => {
-    console.log('✅ Connexion à la base de données PostgreSQL établie avec succès.');
+    logger.info('Database connection established');
     
     // Import models index to ensure associations are loaded
     require('./models/index');
     
     // Sync all models with database
-    return sequelize.sync({ force: false }); // Back to normal sync
+    return sequelize.sync({ force: false });
   })
   .then(() => {
-    console.log('✅ Modèles de base de données synchronisés avec succès.');
+    logger.info('Database models synchronized');
   })
   .catch(err => {
-    console.error('❌ Erreur de connexion à la base de données:', err);
+    logger.error('Database connection error', { error: err.message });
   });
 
 // Initialize Notification Service
@@ -273,12 +309,12 @@ app.get('/api/health', (req, res) => {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  // Only log stack trace in development
-  if (process.env.NODE_ENV === 'development') {
-    console.error(err.stack);
-  } else {
-    console.error(`Error: ${err.message} | ${req.method} ${req.originalUrl}`);
-  }
+  logger.error('Unhandled error', {
+    error: err.message,
+    method: req.method,
+    path: req.originalUrl,
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+  });
 
   // Notify admin of system errors
   if (notificationService) {
@@ -301,10 +337,11 @@ app.use('*', (req, res) => {
 
 // Start server
 server.listen(PORT, () => {
-  console.log(`🚀 Serveur ecommerce français démarré sur le port ${PORT}`);
-  console.log(`📱 Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
-  console.log(`🔗 API URL: http://localhost:${PORT}/api`);
-  console.log(`🔌 WebSocket URL: ws://localhost:${PORT}`);
+  logger.info('Server started', {
+    port: PORT,
+    env: process.env.NODE_ENV || 'development',
+    frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
+  });
 });
 
 // Export for testing

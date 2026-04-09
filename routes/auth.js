@@ -10,7 +10,7 @@ const { Op } = require('sequelize');
 const crypto = require('crypto');
 
 const router = express.Router();
-const { authLimiter, writeLimiter } = require('../middleware/rateLimiter');
+const { authLimiter, writeLimiter, loginLimiter, accountCreationLimiter } = require('../middleware/rateLimiter');
 
 // Notification service (will be set by server.js)
 let notificationService;
@@ -67,7 +67,7 @@ router.get('/user', firebaseAuth, async (req, res) => {
 // @route   POST /api/auth/register-firebase
 // @desc    Register user from Firebase (sync with database)
 // @access  Private (Firebase authenticated)
-router.post('/register-firebase', authLimiter, firebaseAuth, [
+router.post('/register-firebase', accountCreationLimiter, firebaseAuth, [
   body('clientType').optional({ nullable: true }).isIn(['particulier', 'professionnel']).withMessage('Type de client invalide'),
   body('companyName').optional({ nullable: true }).trim(),
   body('siret').optional({ nullable: true }).trim().isLength({ min: 14, max: 14 }).withMessage('Le SIRET doit contenir 14 chiffres'),
@@ -333,7 +333,7 @@ router.put('/profile', firebaseAuth, [
 // @route   POST /api/auth/change-password
 // @desc    Change user password
 // @access  Private
-router.post('/change-password', authLimiter, firebaseAuth, [
+router.post('/change-password', loginLimiter, firebaseAuth, [
   body('currentPassword').notEmpty().withMessage('Mot de passe actuel requis'),
   body('newPassword').isLength({ min: 8 }).withMessage('Le nouveau mot de passe doit contenir au moins 8 caractères')
     .matches(/[A-Z]/).withMessage('Le mot de passe doit contenir au moins une majuscule')
@@ -483,7 +483,9 @@ router.post('/forgot-password', passwordResetLimiter, [
 // @access  Public
 router.post('/reset-password', passwordResetLimiter, [
   body('token').notEmpty().withMessage('Token requis'),
-  body('password').isLength({ min: 6 }).withMessage('Le mot de passe doit contenir au moins 6 caractères')
+  body('password').isLength({ min: 8 }).withMessage('Le mot de passe doit contenir au moins 8 caractères')
+    .matches(/[A-Z]/).withMessage('Le mot de passe doit contenir au moins une majuscule')
+    .matches(/[0-9]/).withMessage('Le mot de passe doit contenir au moins un chiffre')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -623,7 +625,7 @@ router.post('/send-phone-verification', verificationLimiter, firebaseAuth, async
     }
 
     // Generate 6-digit verification code
-    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const verificationCode = crypto.randomInt(100000, 999999).toString();
     
     // Set expiration time (10 minutes from now)
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
@@ -829,7 +831,7 @@ router.post('/set-new-phone', firebaseAuth, [
     }
 
     // Generate 6-digit verification code and send to NEW number
-    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const verificationCode = crypto.randomInt(100000, 999999).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     // Save verification code with the new phone number
@@ -982,7 +984,7 @@ router.post('/send-new-phone-verification', verificationLimiter, firebaseAuth, [
     }
 
     // Generate 6-digit verification code
-    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const verificationCode = crypto.randomInt(100000, 999999).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     console.log('🔐 Generated verification code for new phone:', verificationCode);
@@ -1176,6 +1178,28 @@ router.put('/notification-preferences', firebaseAuth, async (req, res) => {
       success: false,
       error: 'Erreur lors de la mise à jour des préférences'
     });
+  }
+});
+
+// @route   POST /api/auth/logout
+// @desc    Server-side logout — revoke all Firebase refresh tokens
+// @access  Private
+router.post('/logout', firebaseAuth, async (req, res) => {
+  try {
+    const firebaseUid = req.firebaseUser.uid;
+
+    // Revoke all refresh tokens for this user
+    await admin.auth().revokeRefreshTokens(firebaseUid);
+
+    // Reset failed login attempts on explicit logout
+    if (req.user) {
+      await req.user.update({ failedLoginAttempts: 0, accountLockedUntil: null });
+    }
+
+    res.json({ success: true, message: 'Déconnexion réussie' });
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({ success: false, error: 'Erreur lors de la déconnexion' });
   }
 });
 

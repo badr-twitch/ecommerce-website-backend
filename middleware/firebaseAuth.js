@@ -1,5 +1,6 @@
 const admin = require('firebase-admin');
 const User = require('../models/User');
+const logger = require('../services/logger');
 
 // Initialize Firebase Admin SDK
 let serviceAccount;
@@ -23,69 +24,107 @@ if (!admin.apps.length) {
 
 const firebaseAuth = async (req, res, next) => {
   try {
-    console.log('🔍 Firebase Auth Middleware - Request received');
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.log('❌ Firebase Auth Middleware - No Bearer token');
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Token d\'authentification manquant' 
+      return res.status(401).json({
+        success: false,
+        message: 'Token d\'authentification manquant'
       });
     }
 
     const token = authHeader.split('Bearer ')[1];
-    console.log('🔍 Firebase Auth Middleware - Token extracted, length:', token.length);
-    
+
     // Verify Firebase token
-    console.log('🔍 Firebase Auth Middleware - Verifying token...');
     const decodedToken = await admin.auth().verifyIdToken(token);
-    
+
     if (!decodedToken) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Token invalide' 
+      return res.status(401).json({
+        success: false,
+        message: 'Token invalide'
       });
     }
 
     // Add Firebase user to request object
     req.firebaseUser = decodedToken;
-    
+
     // Try to get user from database (optional for registration)
-    const user = await User.findOne({ 
-      where: { firebaseUid: decodedToken.uid } 
+    const user = await User.findOne({
+      where: { firebaseUid: decodedToken.uid }
     });
 
-    console.log('🔍 Firebase Auth Middleware - User found in database:', !!user);
     if (user) {
-      console.log('🔍 Firebase Auth Middleware - User ID:', user.id);
-      console.log('🔍 Firebase Auth Middleware - User role:', user.role);
+      // Check if account is locked
+      if (user.accountLockedUntil && new Date() < new Date(user.accountLockedUntil)) {
+        const minutesLeft = Math.ceil((new Date(user.accountLockedUntil) - new Date()) / 60000);
+        logger.security('auth_account_locked', { userId: user.id, minutesLeft, ip: req.ip });
+        return res.status(423).json({
+          success: false,
+          message: `Compte verrouillé. Réessayez dans ${minutesLeft} minute(s).`
+        });
+      }
+
+      // Successful auth — reset failed attempts if any
+      if (user.failedLoginAttempts > 0) {
+        await user.update({ failedLoginAttempts: 0, accountLockedUntil: null });
+      }
+
       req.user = user;
-    } else {
-      console.log('🔍 Firebase Auth Middleware - No user found in database for Firebase UID:', decodedToken.uid);
     }
-    
+
+    logger.debug('auth_token_verified', { firebaseUid: decodedToken.uid, userFound: !!user });
     next();
   } catch (error) {
-    console.error('Firebase Auth Error:', error);
-    
+    logger.security('auth_token_failed', {
+      errorCode: error.code || 'unknown',
+      ip: req.ip,
+      path: req.originalUrl,
+    });
+
+    // Track failed attempts for known token-related errors
+    if (error.code === 'auth/argument-error' ||
+        error.code === 'auth/id-token-expired' ||
+        error.code === 'auth/id-token-revoked') {
+      // Try to extract uid from the token payload (even if verification failed)
+      try {
+        const token = req.headers.authorization?.split('Bearer ')[1];
+        if (token) {
+          const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+          if (payload.sub) {
+            const user = await User.findOne({ where: { firebaseUid: payload.sub } });
+            if (user) {
+              const attempts = user.failedLoginAttempts + 1;
+              const updateData = { failedLoginAttempts: attempts };
+              if (attempts >= 5) {
+                updateData.accountLockedUntil = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
+                logger.security('auth_account_locked_triggered', { userId: user.id, attempts, ip: req.ip });
+              }
+              await user.update(updateData);
+            }
+          }
+        }
+      } catch (parseErr) {
+        // Token unparseable — can't track, skip
+      }
+    }
+
     if (error.code === 'auth/id-token-expired') {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Token expiré' 
+      return res.status(401).json({
+        success: false,
+        message: 'Token expiré'
       });
     }
-    
+
     if (error.code === 'auth/id-token-revoked') {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Token révoqué' 
+      return res.status(401).json({
+        success: false,
+        message: 'Token révoqué'
       });
     }
-    
-    return res.status(500).json({ 
-      success: false, 
-      message: 'Erreur d\'authentification' 
+
+    return res.status(500).json({
+      success: false,
+      message: 'Erreur d\'authentification'
     });
   }
 };

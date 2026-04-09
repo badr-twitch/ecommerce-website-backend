@@ -4,13 +4,15 @@ const Category = require('../models/Category');
 const Product = require('../models/Product');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const adminAuth = require('../middleware/adminAuth');
+const { publicLimiter, adminActionLimiter } = require('../middleware/rateLimiter');
+const { validateId } = require('../middleware/validateInput');
 
 const router = express.Router();
 
 // @route   GET /api/categories
 // @desc    Get all categories
 // @access  Public
-router.get('/', async (req, res) => {
+router.get('/', publicLimiter, async (req, res) => {
   try {
     const categories = await Category.findAll({
       where: { isActive: true },
@@ -33,7 +35,7 @@ router.get('/', async (req, res) => {
 // @route   GET /api/categories/:id
 // @desc    Get single category by ID
 // @access  Public
-router.get('/:id', async (req, res) => {
+router.get('/:id', publicLimiter, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -80,7 +82,7 @@ router.get('/:id', async (req, res) => {
 // @route   POST /api/categories
 // @desc    Create a new category
 // @access  Private (Admin)
-router.post('/', firebaseAuth, adminAuth, [
+router.post('/', adminActionLimiter, firebaseAuth, adminAuth, [
   body('name').trim().isLength({ min: 2, max: 100 }).withMessage('Le nom doit contenir entre 2 et 100 caractères'),
   body('slug').trim().isLength({ min: 2, max: 100 }).withMessage('Le slug doit contenir entre 2 et 100 caractères'),
   body('parentId').optional().isUUID().withMessage('Parent ID invalide'),
@@ -151,7 +153,7 @@ router.post('/', firebaseAuth, adminAuth, [
 // @route   PUT /api/categories/:id
 // @desc    Update a category
 // @access  Private (Admin)
-router.put('/:id', firebaseAuth, adminAuth, [
+router.put('/:id', validateId, adminActionLimiter, firebaseAuth, adminAuth, [
   body('name').optional().trim().isLength({ min: 2, max: 100 }),
   body('slug').optional().trim().isLength({ min: 2, max: 100 }),
   body('parentId').optional().isUUID(),
@@ -223,7 +225,7 @@ router.put('/:id', firebaseAuth, adminAuth, [
 // @route   DELETE /api/categories/:id
 // @desc    Delete a category
 // @access  Private (Admin)
-router.delete('/:id', firebaseAuth, adminAuth, async (req, res) => {
+router.delete('/:id', validateId, adminActionLimiter, firebaseAuth, adminAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const category = await Category.findByPk(id);

@@ -28,7 +28,7 @@ const emailService = require('../../../services/emailService');
 function buildApp() {
   const app = express();
   app.use(express.json());
-  const authRoutes = require('../../../routes/auth');
+  const { router: authRoutes } = require('../../../routes/auth');
   app.use('/api/auth', authRoutes);
   return app;
 }

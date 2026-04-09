@@ -7,4 +7,8 @@ module.exports = {
   // Prevent open handles from keeping Jest alive
   forceExit: true,
   detectOpenHandles: true,
+  // Force Node.js fs crawler — native 'find' breaks with spaces in path
+  haste: {
+    forceNodeFilesystemAPI: true,
+  },
 };

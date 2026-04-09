@@ -27,8 +27,9 @@ jest.mock('../../../models/Category');
 jest.mock('../../../models/Review');
 jest.mock('../../../models/User');
 
-// Mock express-rate-limit
-jest.mock('express-rate-limit', () => jest.fn(() => (req, res, next) => next()));
+// Mock express-rate-limit (rateLimiter.js uses named destructure: const { rateLimit } = require(...))
+const mockRateLimitFn = jest.fn(() => (req, res, next) => next());
+jest.mock('express-rate-limit', () => Object.assign(mockRateLimitFn, { rateLimit: mockRateLimitFn }));
 
 const Product = require('../../../models/Product');
 const User = require('../../../models/User');

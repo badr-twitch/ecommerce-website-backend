@@ -9,6 +9,9 @@ const { Review, User, Product, Order, OrderItem } = require('../models');
 // Import middleware
 const firebaseAuth = require('../middleware/firebaseAuth');
 const adminAuth = require('../middleware/adminAuth');
+const { publicLimiter, writeLimiter } = require('../middleware/rateLimiter');
+const { validateParamId, validatePagination, validateRating, handleValidationErrors } = require('../middleware/validateInput');
+const { body } = require('express-validator');
 
 // Import services
 const TrustpilotService = require('../services/trustpilotService');
@@ -19,7 +22,7 @@ const trustpilotService = new TrustpilotService();
 // @route   GET /api/reviews/product/:productId
 // @desc    Get reviews for a specific product
 // @access  Public
-router.get('/product/:productId', async (req, res) => {
+router.get('/product/:productId', [...validateParamId('productId'), ...validatePagination, ...validateRating], publicLimiter, async (req, res) => {
   try {
     const { productId } = req.params;
     const { page = 1, limit = 10, sort = 'newest', rating } = req.query;
@@ -134,7 +137,7 @@ router.get('/product/:productId', async (req, res) => {
 // @route   GET /api/reviews/product/:productId/summary
 // @desc    Get review summary for a product (for display in product cards)
 // @access  Public
-router.get('/product/:productId/summary', async (req, res) => {
+router.get('/product/:productId/summary', validateParamId('productId'), publicLimiter, async (req, res) => {
   try {
     const { productId } = req.params;
     
@@ -179,7 +182,13 @@ router.get('/product/:productId/summary', async (req, res) => {
 // @route   POST /api/reviews
 // @desc    Submit a new review
 // @access  Authenticated users
-router.post('/', firebaseAuth, async (req, res) => {
+router.post('/', writeLimiter, firebaseAuth, [
+  body('productId').isUUID().withMessage('Identifiant produit invalide'),
+  body('rating').isInt({ min: 1, max: 5 }).withMessage('Note doit être entre 1 et 5'),
+  body('comment').optional().trim().isLength({ max: 2000 }).withMessage('Commentaire trop long (max 2000 caractères)'),
+  body('title').optional().trim().isLength({ max: 200 }).withMessage('Titre trop long (max 200 caractères)'),
+  handleValidationErrors
+], async (req, res) => {
   try {
     const { productId, title, content, rating, mediaUrls, tags } = req.body;
     if (!req.user) {
@@ -289,7 +298,7 @@ router.post('/', firebaseAuth, async (req, res) => {
 // @route   PUT /api/reviews/:reviewId
 // @desc    Update user's own review
 // @access  Review owner
-router.put('/:reviewId', firebaseAuth, async (req, res) => {
+router.put('/:reviewId', validateParamId('reviewId'), writeLimiter, firebaseAuth, async (req, res) => {
   try {
     const { reviewId } = req.params;
     const { title, content, rating, mediaUrls, tags } = req.body;
@@ -373,7 +382,7 @@ router.put('/:reviewId', firebaseAuth, async (req, res) => {
 // @route   DELETE /api/reviews/:reviewId
 // @desc    Delete user's own review
 // @access  Review owner
-router.delete('/:reviewId', firebaseAuth, async (req, res) => {
+router.delete('/:reviewId', validateParamId('reviewId'), writeLimiter, firebaseAuth, async (req, res) => {
   try {
     const { reviewId } = req.params;
     if (!req.user) {
@@ -430,7 +439,7 @@ router.delete('/:reviewId', firebaseAuth, async (req, res) => {
 // @route   POST /api/reviews/:reviewId/helpful
 // @desc    Mark review as helpful
 // @access  Authenticated users
-router.post('/:reviewId/helpful', firebaseAuth, async (req, res) => {
+router.post('/:reviewId/helpful', validateParamId('reviewId'), firebaseAuth, async (req, res) => {
   try {
     const { reviewId } = req.params;
     if (!req.user) {
@@ -486,7 +495,7 @@ router.post('/:reviewId/helpful', firebaseAuth, async (req, res) => {
 // @route   POST /api/reviews/:reviewId/not-helpful
 // @desc    Mark review as not helpful
 // @access  Authenticated users
-router.post('/:reviewId/not-helpful', firebaseAuth, async (req, res) => {
+router.post('/:reviewId/not-helpful', validateParamId('reviewId'), firebaseAuth, async (req, res) => {
   try {
     const { reviewId } = req.params;
     if (!req.user) {
@@ -637,7 +646,7 @@ router.get('/admin', firebaseAuth, adminAuth, async (req, res) => {
 // @route   PUT /api/admin/reviews/:reviewId/status
 // @desc    Update review status (approve/reject/flag)
 // @access  Admin
-router.put('/admin/:reviewId/status', firebaseAuth, adminAuth, async (req, res) => {
+router.put('/admin/:reviewId/status', validateParamId('reviewId'), firebaseAuth, adminAuth, async (req, res) => {
   try {
     const { reviewId } = req.params;
     const { status, moderationNotes } = req.body;

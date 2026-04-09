@@ -23,9 +23,12 @@ require('../models/index');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const adminAuth = require('../middleware/adminAuth');
 const auditLog = require('../middleware/auditLog');
+const { adminActionLimiter } = require('../middleware/rateLimiter');
+const { validateId, validateParamId, validatePagination, validateDateRange, validateSearch, validateAmountRange, validateStatus, handleValidationErrors } = require('../middleware/validateInput');
+const { param, query } = require('express-validator');
 
-// Apply Firebase auth and admin auth to all admin routes
-router.use(firebaseAuth, adminAuth);
+// Apply Firebase auth, admin auth, and rate limiting to all admin routes
+router.use(firebaseAuth, adminAuth, adminActionLimiter);
 
 // ==================== DASHBOARD ====================
 
@@ -456,7 +459,7 @@ router.post('/products', auditLog('CREATE', 'product', null, (req) => ({ name: r
 // @route   PUT /api/admin/products/:id
 // @desc    Update a product
 // @access  Admin
-router.put('/products/:id', auditLog('UPDATE', 'product', req => req.params.id), [
+router.put('/products/:id', validateId, auditLog('UPDATE', 'product', req => req.params.id), [
   body('name').optional().trim().isLength({ min: 2, max: 100 }).withMessage('Le nom doit contenir entre 2 et 100 caractères'),
   body('description').optional().trim().isLength({ min: 10 }).withMessage('La description doit contenir au moins 10 caractères'),
   body('price').optional().isFloat({ min: 0 }).withMessage('Le prix doit être un nombre positif'),
@@ -544,7 +547,7 @@ router.put('/products/:id', auditLog('UPDATE', 'product', req => req.params.id),
 // @route   DELETE /api/admin/products/:id
 // @desc    Delete a product
 // @access  Admin
-router.delete('/products/:id', auditLog('DELETE', 'product', req => req.params.id), async (req, res) => {
+router.delete('/products/:id', validateId, auditLog('DELETE', 'product', req => req.params.id), async (req, res) => {
   try {
     const product = await Product.findByPk(req.params.id);
     if (!product) {
@@ -659,7 +662,7 @@ router.post('/categories', [
 // @route   PUT /api/admin/categories/:id
 // @desc    Update a category
 // @access  Admin
-router.put('/categories/:id', [
+router.put('/categories/:id', validateId, [
   body('name').optional().trim().isLength({ min: 2, max: 50 }).withMessage('Le nom doit contenir entre 2 et 50 caractères'),
   body('description').optional().trim().custom((value) => {
     if (value && value.length > 0 && value.length < 5) {
@@ -720,7 +723,7 @@ router.put('/categories/:id', [
 // @route   DELETE /api/admin/categories/:id
 // @desc    Delete a category
 // @access  Admin
-router.delete('/categories/:id', async (req, res) => {
+router.delete('/categories/:id', validateId, async (req, res) => {
   try {
     const category = await Category.findByPk(req.params.id);
     if (!category) {
@@ -763,7 +766,7 @@ router.delete('/categories/:id', async (req, res) => {
 // @route   GET /api/admin/orders
 // @desc    Get all orders with pagination and filtering
 // @access  Admin
-router.get('/orders', async (req, res) => {
+router.get('/orders', [...validatePagination, ...validateDateRange, ...validateSearch, ...validateAmountRange, ...validateStatus(['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded'])], async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
@@ -858,7 +861,7 @@ router.get('/orders', async (req, res) => {
 // @route   GET /api/admin/orders/:id
 // @desc    Get detailed order information
 // @access  Admin
-router.get('/orders/:id', async (req, res) => {
+router.get('/orders/:id', validateId, async (req, res) => {
   try {
     const order = await Order.findByPk(req.params.id, {
       include: [
@@ -966,7 +969,7 @@ router.put('/orders/bulk/status', [
 // @route   PUT /api/admin/orders/:id/status
 // @desc    Update order status with comments
 // @access  Admin
-router.put('/orders/:id/status', auditLog('UPDATE_STATUS', 'order', req => req.params.id, (req) => ({ newStatus: req.body.status })), [
+router.put('/orders/:id/status', validateId, auditLog('UPDATE_STATUS', 'order', req => req.params.id, (req) => ({ newStatus: req.body.status })), [
   body('status').isIn(['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded']).withMessage('Statut invalide'),
   body('comment').optional().trim().isLength({ max: 500 }).withMessage('Le commentaire ne doit pas dépasser 500 caractères')
 ], async (req, res) => {
@@ -1016,7 +1019,7 @@ router.put('/orders/:id/status', auditLog('UPDATE_STATUS', 'order', req => req.p
 // @route   POST /api/admin/orders/:id/refund
 // @desc    Process full or partial refund for an order
 // @access  Admin
-router.post('/orders/:id/refund', auditLog('REFUND', 'order', req => req.params.id, (req) => ({ amount: req.body.amount, reason: req.body.reason })), [
+router.post('/orders/:id/refund', validateId, auditLog('REFUND', 'order', req => req.params.id, (req) => ({ amount: req.body.amount, reason: req.body.reason })), [
   body('amount').optional().isFloat({ min: 0.01 }).withMessage('Montant invalide'),
   body('reason').trim().isLength({ min: 1, max: 500 }).withMessage('La raison est requise (max 500 caractères)')
 ], async (req, res) => {
@@ -1246,7 +1249,7 @@ router.get('/users', async (req, res) => {
 // @route   PUT /api/admin/users/:id/status
 // @desc    Toggle user active status
 // @access  Admin
-router.put('/users/:id/status', auditLog('UPDATE_STATUS', 'user', req => req.params.id, (req) => ({ isActive: req.body.isActive })), async (req, res) => {
+router.put('/users/:id/status', validateId, auditLog('UPDATE_STATUS', 'user', req => req.params.id, (req) => ({ isActive: req.body.isActive })), async (req, res) => {
   try {
     const user = await User.findByPk(req.params.id);
     if (!user) {
@@ -1284,7 +1287,7 @@ router.put('/users/:id/status', auditLog('UPDATE_STATUS', 'user', req => req.par
 // @route   PUT /api/admin/users/:id/role
 // @desc    Change user role (client/admin)
 // @access  Admin
-router.put('/users/:id/role', auditLog('UPDATE_ROLE', 'user', req => req.params.id, (req) => ({ newRole: req.body.role })), [
+router.put('/users/:id/role', validateId, auditLog('UPDATE_ROLE', 'user', req => req.params.id, (req) => ({ newRole: req.body.role })), [
   body('role').isIn(['client', 'admin']).withMessage('Rôle invalide')
 ], async (req, res) => {
   try {
@@ -1361,7 +1364,7 @@ router.get('/inventory/alerts', async (req, res) => {
 // @route   GET /api/admin/inventory/history/:productId
 // @desc    Get stock history for a product
 // @access  Admin
-router.get('/inventory/history/:productId', async (req, res) => {
+router.get('/inventory/history/:productId', validateParamId('productId'), async (req, res) => {
   try {
     const { productId } = req.params;
     const limit = parseInt(req.query.limit) || 50;
@@ -1474,7 +1477,7 @@ router.post('/inventory/bulk-update', [
 // @route   PUT /api/admin/inventory/reorder-point/:productId
 // @desc    Set reorder point for a product
 // @access  Admin
-router.put('/inventory/reorder-point/:productId', [
+router.put('/inventory/reorder-point/:productId', validateParamId('productId'), [
   body('reorderPoint').isInt({ min: 0 }).withMessage('Point de réapprovisionnement invalide')
 ], async (req, res) => {
   try {
@@ -1514,7 +1517,7 @@ const OrderNote = require('../models/OrderNote');
 // @route   GET /api/admin/orders/:id/notes
 // @desc    Get all notes for an order
 // @access  Admin
-router.get('/orders/:id/notes', async (req, res) => {
+router.get('/orders/:id/notes', validateId, async (req, res) => {
   try {
     const notes = await OrderNote.findAll({
       where: { orderId: req.params.id },
@@ -1531,7 +1534,7 @@ router.get('/orders/:id/notes', async (req, res) => {
 // @route   POST /api/admin/orders/:id/notes
 // @desc    Add a note to an order
 // @access  Admin
-router.post('/orders/:id/notes', [
+router.post('/orders/:id/notes', validateId, [
   body('content').trim().isLength({ min: 1, max: 2000 }).withMessage('Contenu requis (max 2000 caractères)'),
   body('isInternal').optional().isBoolean()
 ], async (req, res) => {
@@ -1567,7 +1570,7 @@ router.post('/orders/:id/notes', [
 // @route   DELETE /api/admin/orders/:orderId/notes/:noteId
 // @desc    Delete an order note
 // @access  Admin
-router.delete('/orders/:orderId/notes/:noteId', async (req, res) => {
+router.delete('/orders/:orderId/notes/:noteId', [...validateParamId('orderId'), ...validateParamId('noteId')], async (req, res) => {
   try {
     const note = await OrderNote.findOne({
       where: { id: req.params.noteId, orderId: req.params.orderId }
@@ -1683,7 +1686,7 @@ router.get('/memberships/users', async (req, res) => {
 });
 
 // PUT /admin/memberships/users/:userId — Manually manage a user's membership
-router.put('/memberships/users/:userId', async (req, res) => {
+router.put('/memberships/users/:userId', validateParamId('userId'), async (req, res) => {
   try {
     const user = await User.findByPk(req.params.userId);
     if (!user) {

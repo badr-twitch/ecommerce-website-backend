@@ -414,6 +414,11 @@ router.post('/gift/redeem', firebaseAuth, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Code cadeau invalide ou déjà utilisé.' });
     }
 
+    // Verify gift is intended for this user (if recipient was specified)
+    if (gift.recipientEmail && gift.recipientEmail.toLowerCase() !== user.email.toLowerCase()) {
+      return res.status(403).json({ success: false, error: 'Ce code cadeau est destiné à un autre destinataire.' });
+    }
+
     if (new Date(gift.expiresAt) < new Date()) {
       await gift.update({ status: 'expired' });
       return res.status(400).json({ success: false, error: 'Ce code cadeau a expiré.' });

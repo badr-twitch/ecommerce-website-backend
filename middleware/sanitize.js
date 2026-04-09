@@ -8,6 +8,22 @@ const sanitizeBody = (req, res, next) => {
   if (req.body && typeof req.body === 'object') {
     req.body = sanitizeObject(req.body);
   }
+  // Sanitize query parameters
+  if (req.query && typeof req.query === 'object') {
+    for (const [key, value] of Object.entries(req.query)) {
+      if (typeof value === 'string') {
+        req.query[key] = xss(value);
+      }
+    }
+  }
+  // Sanitize route parameters
+  if (req.params && typeof req.params === 'object') {
+    for (const [key, value] of Object.entries(req.params)) {
+      if (typeof value === 'string') {
+        req.params[key] = xss(value);
+      }
+    }
+  }
   next();
 };
 

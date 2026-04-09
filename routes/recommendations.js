@@ -3,6 +3,11 @@ const router = express.Router();
 const RecommendationService = require('../services/recommendationService');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const adminAuth = require('../middleware/adminAuth');
+const { scrapingLimiter } = require('../middleware/rateLimiter');
+const { validateParamId } = require('../middleware/validateInput');
+
+// Apply anti-scraping rate limit to all recommendation endpoints
+router.use(scrapingLimiter);
 
 const recommendationService = new RecommendationService();
 
@@ -41,7 +46,7 @@ router.get('/user', firebaseAuth, async (req, res) => {
  * @desc    Get product recommendations for a specific product
  * @access  Public
  */
-router.get('/product/:productId', async (req, res) => {
+router.get('/product/:productId', validateParamId('productId'), async (req, res) => {
   try {
     const { productId } = req.params;
     const limit = parseInt(req.query.limit) || 6;
@@ -68,7 +73,7 @@ router.get('/product/:productId', async (req, res) => {
  * @desc    Get category-based recommendations
  * @access  Public
  */
-router.get('/category/:categoryId', async (req, res) => {
+router.get('/category/:categoryId', validateParamId('categoryId'), async (req, res) => {
   try {
     const { categoryId } = req.params;
     const limit = parseInt(req.query.limit) || 8;
@@ -146,7 +151,7 @@ router.get('/trending', async (req, res) => {
  * @desc    Get recommendations based on similar users (admin only)
  * @access  Private (Admin)
  */
-router.get('/similar-users/:userId', firebaseAuth, adminAuth, async (req, res) => {
+router.get('/similar-users/:userId', validateParamId('userId'), firebaseAuth, adminAuth, async (req, res) => {
   try {
     const { userId } = req.params;
     const limit = parseInt(req.query.limit) || 5;
@@ -181,7 +186,7 @@ router.get('/similar-users/:userId', firebaseAuth, adminAuth, async (req, res) =
  * @desc    Get products frequently bought together with a specific product
  * @access  Public
  */
-router.get('/frequently-bought/:productId', async (req, res) => {
+router.get('/frequently-bought/:productId', validateParamId('productId'), async (req, res) => {
   try {
     const { productId } = req.params;
     const limit = parseInt(req.query.limit) || 4;

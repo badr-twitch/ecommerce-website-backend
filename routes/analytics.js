@@ -13,6 +13,10 @@ const OrderItem = require('../models/OrderItem');
 // Import middleware
 const firebaseAuth = require('../middleware/firebaseAuth');
 const adminAuth = require('../middleware/adminAuth');
+const { adminActionLimiter } = require('../middleware/rateLimiter');
+
+// Apply rate limiting to all analytics routes
+router.use(adminActionLimiter);
 
 // Apply Firebase auth and admin auth to all analytics routes
 router.use(firebaseAuth, adminAuth);

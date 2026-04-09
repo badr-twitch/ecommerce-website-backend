@@ -236,6 +236,17 @@ const User = sequelize.define('User', {
     type: DataTypes.STRING,
     allowNull: true,
     comment: 'Stripe Customer ID for payment processing'
+  },
+  failedLoginAttempts: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+    comment: 'Consecutive failed login attempts'
+  },
+  accountLockedUntil: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    comment: 'Account locked until this timestamp after too many failed attempts'
   }
 }, {
   tableName: 'users',

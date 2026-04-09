@@ -3,8 +3,13 @@ const { body, validationResult } = require('express-validator');
 const ShippingAddress = require('../models/ShippingAddress');
 const User = require('../models/User');
 const firebaseAuth = require('../middleware/firebaseAuth');
+const { writeLimiter } = require('../middleware/rateLimiter');
+const { validateId } = require('../middleware/validateInput');
 
 const router = express.Router();
+
+// Apply rate limiting to all shipping address routes
+router.use(writeLimiter);
 
 // @route   GET /api/shipping-addresses
 // @desc    Get user's shipping addresses
@@ -113,7 +118,7 @@ router.post('/', [
 // @route   PUT /api/shipping-addresses/:id
 // @desc    Update shipping address
 // @access  Private
-router.put('/:id', [
+router.put('/:id', validateId, [
   firebaseAuth,
   body('name').notEmpty().withMessage('Nom de l\'adresse requis'),
   body('firstName').notEmpty().withMessage('Prénom requis'),
@@ -186,7 +191,7 @@ router.put('/:id', [
 // @route   DELETE /api/shipping-addresses/:id
 // @desc    Delete shipping address
 // @access  Private
-router.delete('/:id', firebaseAuth, async (req, res) => {
+router.delete('/:id', validateId, firebaseAuth, async (req, res) => {
   try {
     const user = await User.findOne({ 
       where: { firebaseUid: req.firebaseUser.uid } 
@@ -243,7 +248,7 @@ router.delete('/:id', firebaseAuth, async (req, res) => {
 // @route   PUT /api/shipping-addresses/:id/default
 // @desc    Set shipping address as default
 // @access  Private
-router.put('/:id/default', firebaseAuth, async (req, res) => {
+router.put('/:id/default', validateId, firebaseAuth, async (req, res) => {
   try {
     const user = await User.findOne({ 
       where: { firebaseUid: req.firebaseUser.uid } 

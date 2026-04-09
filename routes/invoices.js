@@ -5,22 +5,26 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const invoiceService = require('../services/invoiceService');
+const { validateId } = require('../middleware/validateInput');
 
 const router = express.Router();
 
 // @route   GET /api/orders/:id/invoice
 // @desc    Download PDF invoice for an order
 // @access  Private
-router.get('/:id/invoice', firebaseAuth, async (req, res) => {
+router.get('/:id/invoice', validateId, firebaseAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
     // Find user
     const user = await User.findOne({ where: { firebaseUid: req.firebaseUser.uid } });
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'Utilisateur non trouvé' });
+    }
 
     // Build query — restrict to user's own orders (unless admin)
     const whereClause = { id };
-    if (user && user.role !== 'admin') {
+    if (user.role !== 'admin') {
       whereClause.userId = user.id;
     }
 

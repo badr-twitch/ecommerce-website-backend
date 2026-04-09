@@ -14,6 +14,8 @@ const loyaltyService = require('../services/loyaltyService');
 
 const router = express.Router();
 const { publicLimiter, writeLimiter } = require('../middleware/rateLimiter');
+const { validateId, validatePagination, handleValidationErrors } = require('../middleware/validateInput');
+const { param } = require('express-validator');
 
 // Initialize notification service (will be set by server.js)
 let notificationService;
@@ -147,6 +149,7 @@ router.get('/', firebaseAuth, async (req, res, next) => {
 // @desc    Public order tracking by order number + email
 // @access  Public
 router.get('/track/:orderNumber', publicLimiter, [
+  param('orderNumber').trim().isLength({ min: 1, max: 50 }).matches(/^[A-Za-z0-9-]+$/).withMessage('Numéro de commande invalide'),
   query('email').isEmail().withMessage('Email invalide')
 ], async (req, res) => {
   try {
@@ -225,7 +228,7 @@ router.get('/reorder-suggestions', firebaseAuth, async (req, res) => {
 // @route   GET /api/orders/:id
 // @desc    Get single order
 // @access  Private
-router.get('/:id', firebaseAuth, async (req, res) => {
+router.get('/:id', validateId, firebaseAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -558,7 +561,7 @@ router.post('/', writeLimiter, firebaseAuth, [
 // @route   PUT /api/orders/:id/status
 // @desc    Update order status (admin only)
 // @access  Private (Admin)
-router.put('/:id/status', firebaseAuth, adminAuth, [
+router.put('/:id/status', validateId, firebaseAuth, adminAuth, [
   body('status').isIn(['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded']).withMessage('Statut invalide'),
   body('trackingNumber').optional().trim(),
   body('internalNotes').optional().trim()
@@ -653,7 +656,7 @@ router.put('/:id/status', firebaseAuth, adminAuth, [
 // @route   POST /api/orders/:id/cancel
 // @desc    Cancel order
 // @access  Private
-router.post('/:id/cancel', firebaseAuth, async (req, res) => {
+router.post('/:id/cancel', validateId, firebaseAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -743,7 +746,7 @@ router.post('/:id/cancel', firebaseAuth, async (req, res) => {
 // @route   POST /api/orders/:id/refund
 // @desc    Request refund for a delivered order
 // @access  Private
-router.post('/:id/refund', firebaseAuth, [
+router.post('/:id/refund', validateId, firebaseAuth, [
   body('reason').notEmpty().withMessage('Raison du remboursement requise')
 ], async (req, res) => {
   try {
@@ -870,7 +873,7 @@ router.post('/:id/refund', firebaseAuth, [
 // @route   GET /api/orders/:id/history
 // @desc    Get order status change history
 // @access  Private
-router.get('/:id/history', firebaseAuth, async (req, res) => {
+router.get('/:id/history', validateId, firebaseAuth, async (req, res) => {
   try {
     const { id } = req.params;
 

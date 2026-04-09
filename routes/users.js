@@ -4,8 +4,13 @@ const User = require('../models/User');
 const Order = require('../models/Order');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const adminAuth = require('../middleware/adminAuth');
+const { adminActionLimiter } = require('../middleware/rateLimiter');
+const { validateId, validateParamId } = require('../middleware/validateInput');
 
 const router = express.Router();
+
+// Apply rate limiting to all user management routes
+router.use(adminActionLimiter);
 
 // @route   GET /api/users
 // @desc    Get all users (admin only)
@@ -83,7 +88,7 @@ router.get('/', firebaseAuth, adminAuth, [
 // @route   GET /api/users/:id
 // @desc    Get user by ID (admin or own profile)
 // @access  Private
-router.get('/:id', firebaseAuth, async (req, res) => {
+router.get('/:id', validateId, firebaseAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -117,7 +122,7 @@ router.get('/:id', firebaseAuth, async (req, res) => {
 // @route   PUT /api/users/:id
 // @desc    Update user (admin or own profile)
 // @access  Private
-router.put('/:id', firebaseAuth, [
+router.put('/:id', validateId, firebaseAuth, [
   body('firstName').optional().trim().isLength({ min: 2, max: 50 }),
   body('lastName').optional().trim().isLength({ min: 2, max: 50 }),
   body('phone').optional().isMobilePhone('fr-FR'),
@@ -176,7 +181,7 @@ router.put('/:id', firebaseAuth, [
 // @route   DELETE /api/users/:id
 // @desc    Delete user (admin only)
 // @access  Private (Admin)
-router.delete('/:id', firebaseAuth, adminAuth, async (req, res) => {
+router.delete('/:id', validateId, firebaseAuth, adminAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -213,7 +218,7 @@ router.delete('/:id', firebaseAuth, adminAuth, async (req, res) => {
 // @route   GET /api/users/:id/orders
 // @desc    Get user orders (admin or own orders)
 // @access  Private
-router.get('/:id/orders', firebaseAuth, [
+router.get('/:id/orders', validateId, firebaseAuth, [
   query('page').optional().isInt({ min: 1 }),
   query('limit').optional().isInt({ min: 1, max: 50 }),
   query('status').optional().isIn(['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded'])
@@ -289,7 +294,7 @@ router.get('/:id/orders', firebaseAuth, [
 // @route   POST /api/users/:id/verify-email
 // @desc    Verify user email
 // @access  Public
-router.post('/:id/verify-email', [
+router.post('/:id/verify-email', validateId, [
   body('token').notEmpty().withMessage('Token requis')
 ], async (req, res) => {
   try {
@@ -337,7 +342,7 @@ router.post('/:id/verify-email', [
 // @route   GET /api/users/:id/wishlist
 // @desc    Get user wishlist
 // @access  Private
-router.get('/:id/wishlist', firebaseAuth, async (req, res) => {
+router.get('/:id/wishlist', validateId, firebaseAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -398,7 +403,7 @@ router.get('/:id/wishlist', firebaseAuth, async (req, res) => {
 // @route   POST /api/users/:id/wishlist
 // @desc    Add product to wishlist
 // @access  Private
-router.post('/:id/wishlist', firebaseAuth, [
+router.post('/:id/wishlist', validateId, firebaseAuth, [
   body('productId').isUUID().withMessage('ID de produit invalide')
 ], async (req, res) => {
   try {
@@ -472,7 +477,7 @@ router.post('/:id/wishlist', firebaseAuth, [
 // @route   DELETE /api/users/:id/wishlist/:productId
 // @desc    Remove product from wishlist
 // @access  Private
-router.delete('/:id/wishlist/:productId', firebaseAuth, async (req, res) => {
+router.delete('/:id/wishlist/:productId', [...validateId, ...validateParamId('productId')], firebaseAuth, async (req, res) => {
   try {
     const { id, productId } = req.params;
 
@@ -520,7 +525,7 @@ router.delete('/:id/wishlist/:productId', firebaseAuth, async (req, res) => {
 // @route   DELETE /api/users/:id/wishlist
 // @desc    Clear wishlist
 // @access  Private
-router.delete('/:id/wishlist', firebaseAuth, async (req, res) => {
+router.delete('/:id/wishlist', validateId, firebaseAuth, async (req, res) => {
   try {
     const { id } = req.params;
 

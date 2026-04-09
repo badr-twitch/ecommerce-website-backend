@@ -4,8 +4,13 @@ const PaymentMethod = require('../models/PaymentMethod');
 const User = require('../models/User');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const paymentProcessor = require('../services/paymentProcessor');
+const { writeLimiter } = require('../middleware/rateLimiter');
+const { validateId } = require('../middleware/validateInput');
 
 const router = express.Router();
+
+// Apply rate limiting to all payment method routes
+router.use(writeLimiter);
 
 // Helper: find user from Firebase UID
 async function findUser(req, res) {
@@ -87,7 +92,7 @@ router.post('/setup-intent', firebaseAuth, async (req, res) => {
 // @route   DELETE /api/payment-methods/:id
 // @desc    Remove a saved payment method
 // @access  Private
-router.delete('/:id', firebaseAuth, async (req, res) => {
+router.delete('/:id', validateId, firebaseAuth, async (req, res) => {
   try {
     const user = await findUser(req, res);
     if (!user) return;
@@ -96,6 +101,11 @@ router.delete('/:id', firebaseAuth, async (req, res) => {
 
     // Try to detach from Stripe first (id is a Stripe PaymentMethod ID like pm_xxx)
     if (id.startsWith('pm_')) {
+      // Verify the payment method belongs to this user's Stripe customer
+      const stripePm = await paymentProcessor.retrievePaymentMethod(id);
+      if (stripePm.customer !== user.stripeCustomerId) {
+        return res.status(403).json({ success: false, message: 'Méthode de paiement non autorisée' });
+      }
       await paymentProcessor.detachPaymentMethod(id);
       return res.json({ success: true, message: 'Méthode de paiement supprimée avec succès' });
     }
@@ -144,13 +154,18 @@ router.delete('/:id', firebaseAuth, async (req, res) => {
 // @route   PUT /api/payment-methods/:id/default
 // @desc    Set payment method as default
 // @access  Private
-router.put('/:id/default', firebaseAuth, async (req, res) => {
+router.put('/:id/default', validateId, firebaseAuth, async (req, res) => {
   try {
     const user = await findUser(req, res);
     if (!user) return;
 
     // If user has Stripe customer, update default payment method there
     if (user.stripeCustomerId && req.params.id.startsWith('pm_')) {
+      // Verify the payment method belongs to this user's Stripe customer
+      const stripePm = await paymentProcessor.retrievePaymentMethod(req.params.id);
+      if (stripePm.customer !== user.stripeCustomerId) {
+        return res.status(403).json({ success: false, message: 'Méthode de paiement non autorisée' });
+      }
       await paymentProcessor.getStripe().customers.update(user.stripeCustomerId, {
         invoice_settings: { default_payment_method: req.params.id }
       });

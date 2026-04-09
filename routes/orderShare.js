@@ -2,13 +2,18 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const firebaseAuth = require('../middleware/firebaseAuth');
+const { body, param } = require('express-validator');
+const { validateId, handleValidationErrors } = require('../middleware/validateInput');
 const Order = require('../models/Order');
 const OrderItem = require('../models/OrderItem');
 const Product = require('../models/Product');
 const OrderShare = require('../models/OrderShare');
 
 // POST /api/orders/:id/share — Generate a share link
-router.post('/:id/share', firebaseAuth, async (req, res) => {
+router.post('/:id/share', validateId, [
+  body('shareType').optional().isIn(['products', 'status', 'gift']).withMessage('Type de partage invalide'),
+  handleValidationErrors
+], firebaseAuth, async (req, res) => {
   try {
     const { shareType = 'products' } = req.body;
     const order = await Order.findByPk(req.params.id);
@@ -45,7 +50,10 @@ router.post('/:id/share', firebaseAuth, async (req, res) => {
 });
 
 // GET /api/orders/shared/:token — Public endpoint, no auth required
-router.get('/shared/:token', async (req, res) => {
+router.get('/shared/:token', [
+  param('token').isUUID().withMessage('Token invalide'),
+  handleValidationErrors
+], async (req, res) => {
   try {
     const share = await OrderShare.findOne({
       where: { token: req.params.token }

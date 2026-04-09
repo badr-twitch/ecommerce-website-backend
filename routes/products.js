@@ -11,6 +11,7 @@ const adminAuth = require('../middleware/adminAuth');
 
 const router = express.Router();
 const { writeLimiter } = require('../middleware/rateLimiter');
+const { validateId, validateParamId } = require('../middleware/validateInput');
 
 // @route   GET /api/products
 // @desc    Get all products with filtering and pagination
@@ -169,7 +170,7 @@ router.get('/brands', async (req, res) => {
 // @route   GET /api/products/:id
 // @desc    Get single product by ID
 // @access  Public
-router.get('/:id', async (req, res) => {
+router.get('/:id', validateId, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -274,7 +275,7 @@ router.post('/', firebaseAuth, adminAuth, [
 // @route   PUT /api/products/:id
 // @desc    Update a product
 // @access  Private (Admin)
-router.put('/:id', firebaseAuth, adminAuth, [
+router.put('/:id', validateId, firebaseAuth, adminAuth, [
   body('name').optional().trim().isLength({ min: 2, max: 200 }),
   body('description').optional().trim().isLength({ min: 10, max: 2000 }),
   body('price').optional().isFloat({ min: 0 }),
@@ -317,7 +318,7 @@ router.put('/:id', firebaseAuth, adminAuth, [
 // @route   DELETE /api/products/:id
 // @desc    Delete a product
 // @access  Private (Admin)
-router.delete('/:id', firebaseAuth, adminAuth, async (req, res) => {
+router.delete('/:id', validateId, firebaseAuth, adminAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const product = await Product.findByPk(id);
@@ -346,7 +347,7 @@ router.delete('/:id', firebaseAuth, adminAuth, async (req, res) => {
 // @route   POST /api/products/:id/reviews
 // @desc    Add a review to a product
 // @access  Private
-router.post('/:id/reviews', writeLimiter, firebaseAuth, [
+router.post('/:id/reviews', validateId, writeLimiter, firebaseAuth, [
   body('rating').isInt({ min: 1, max: 5 }).withMessage('Note invalide'),
   body('title').optional().trim().isLength({ max: 200 }),
   body('comment').optional().trim().isLength({ max: 1000 })
