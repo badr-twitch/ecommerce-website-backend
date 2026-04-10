@@ -23,12 +23,20 @@ require('../models/index');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const adminAuth = require('../middleware/adminAuth');
 const auditLog = require('../middleware/auditLog');
-const { adminActionLimiter } = require('../middleware/rateLimiter');
+const { adminActionLimiter, globalLimiter } = require('../middleware/rateLimiter');
 const { validateId, validateParamId, validatePagination, validateDateRange, validateSearch, validateAmountRange, validateStatus, handleValidationErrors } = require('../middleware/validateInput');
 const { param, query } = require('express-validator');
 
-// Apply Firebase auth, admin auth, and rate limiting to all admin routes
-router.use(firebaseAuth, adminAuth, adminActionLimiter);
+// Apply Firebase auth + admin auth to all admin routes
+router.use(firebaseAuth, adminAuth);
+
+// Use generous global limiter (200/15min) for reads, strict adminActionLimiter (20/15min) for writes only
+router.use((req, res, next) => {
+  if (req.method === 'GET') {
+    return globalLimiter(req, res, next);
+  }
+  return adminActionLimiter(req, res, next);
+});
 
 // ==================== DASHBOARD ====================
 
