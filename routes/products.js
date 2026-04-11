@@ -2,10 +2,7 @@ const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const { Op } = require('sequelize');
 const sequelize = require('../config/database');
-const Product = require('../models/Product');
-const Category = require('../models/Category');
-const Review = require('../models/Review');
-const User = require('../models/User');
+const { Product, Category, Review, User } = require('../models');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const adminAuth = require('../middleware/adminAuth');
 
@@ -188,7 +185,7 @@ router.get('/:id', validateId, async (req, res) => {
         {
           model: Review,
           as: 'reviews',
-          where: { isApproved: true },
+          where: { status: 'approved' },
           required: false,
           include: [
             {

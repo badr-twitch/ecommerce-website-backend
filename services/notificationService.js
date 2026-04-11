@@ -1,4 +1,4 @@
-const { Notification, NotificationPreference, User, Order, Product } = require('../models');
+const { Notification, NotificationPreference, User, Order, OrderItem, Product } = require('../models');
 const { Op } = require('sequelize');
 const emailService = require('./emailService');
 

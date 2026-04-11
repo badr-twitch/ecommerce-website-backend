@@ -5,7 +5,7 @@ const User = require('../models/User');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const paymentProcessor = require('../services/paymentProcessor');
 const { writeLimiter } = require('../middleware/rateLimiter');
-const { validateId } = require('../middleware/validateInput');
+const { validateIdOrStripeId } = require('../middleware/validateInput');
 
 const router = express.Router();
 
@@ -92,7 +92,7 @@ router.post('/setup-intent', firebaseAuth, async (req, res) => {
 // @route   DELETE /api/payment-methods/:id
 // @desc    Remove a saved payment method
 // @access  Private
-router.delete('/:id', validateId, firebaseAuth, async (req, res) => {
+router.delete('/:id', validateIdOrStripeId, firebaseAuth, async (req, res) => {
   try {
     const user = await findUser(req, res);
     if (!user) return;
@@ -154,7 +154,7 @@ router.delete('/:id', validateId, firebaseAuth, async (req, res) => {
 // @route   PUT /api/payment-methods/:id/default
 // @desc    Set payment method as default
 // @access  Private
-router.put('/:id/default', validateId, firebaseAuth, async (req, res) => {
+router.put('/:id/default', validateIdOrStripeId, firebaseAuth, async (req, res) => {
   try {
     const user = await findUser(req, res);
     if (!user) return;

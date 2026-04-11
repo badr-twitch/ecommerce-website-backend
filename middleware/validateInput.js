@@ -24,6 +24,20 @@ const validateId = [
   handleValidationErrors
 ];
 
+/** Validate :id param as UUID or Stripe ID (pm_, pi_, sub_, etc.) */
+const validateIdOrStripeId = [
+  param('id')
+    .custom((value) => {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const stripeRegex = /^[a-z]{2,4}_[A-Za-z0-9]{10,}$/;
+      if (!uuidRegex.test(value) && !stripeRegex.test(value)) {
+        throw new Error('Identifiant invalide');
+      }
+      return true;
+    }),
+  handleValidationErrors
+];
+
 /** Validate a named param as UUID (e.g. :productId, :userId) */
 const validateParamId = (name) => [
   param(name)
@@ -131,6 +145,7 @@ const validateRating = [
 module.exports = {
   handleValidationErrors,
   validateId,
+  validateIdOrStripeId,
   validateParamId,
   validatePagination,
   validateDateRange,
