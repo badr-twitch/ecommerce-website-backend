@@ -1850,4 +1850,148 @@ router.get('/audit-logs', async (req, res) => {
   }
 });
 
+// ==========================================
+// REFUND REQUEST MANAGEMENT
+// ==========================================
+
+// @route   POST /api/admin/orders/:id/approve-refund
+// @desc    Approve a customer refund request — triggers Stripe refund
+// @access  Admin
+router.post('/orders/:id/approve-refund', validateId, auditLog('APPROVE_REFUND', 'order', req => req.params.id), async (req, res) => {
+  try {
+    const order = await Order.findByPk(req.params.id, {
+      include: [{ model: OrderItem, as: 'orderItems', include: [{ model: Product, as: 'product' }] }]
+    });
+
+    if (!order) {
+      return res.status(404).json({ success: false, error: 'Commande non trouvée' });
+    }
+
+    if (order.status !== 'refund_requested') {
+      return res.status(400).json({ success: false, error: 'Cette commande n\'a pas de demande de remboursement en attente' });
+    }
+
+    // Process Stripe refund
+    let refundId = null;
+    if (order.paymentTransactionId) {
+      try {
+        const paymentProcessor = require('../services/paymentProcessor');
+        const refund = await paymentProcessor.refundPayment(order.paymentTransactionId);
+        refundId = refund.id;
+      } catch (stripeErr) {
+        console.error('Stripe refund error:', stripeErr);
+        return res.status(500).json({ success: false, error: 'Erreur lors du remboursement Stripe: ' + stripeErr.message });
+      }
+    }
+
+    const oldStatus = order.status;
+    await order.update({
+      status: 'refunded',
+      paymentStatus: 'refunded'
+    });
+
+    // Restore stock
+    for (const item of order.orderItems || []) {
+      if (item.product) {
+        await Product.increment('stockQuantity', { by: item.quantity, where: { id: item.productId } });
+      }
+    }
+
+    // Log status change
+    const OrderStatusLog = require('../models/OrderStatusLog');
+    await OrderStatusLog.create({
+      orderId: order.id,
+      previousStatus: oldStatus,
+      newStatus: 'refunded',
+      changedBy: req.user.id,
+      changedByRole: 'admin',
+      reason: `Demande de remboursement approuvée — Catégorie: ${order.refundReason}`,
+      metadata: { refundId, refundReason: order.refundReason }
+    });
+
+    // Send notification to customer
+    const customer = await User.findByPk(order.userId);
+    if (customer) {
+      try {
+        const emailService = require('../services/emailService');
+        await emailService.sendOrderStatusUpdateEmail(order, customer, oldStatus, 'refunded');
+      } catch (emailError) {
+        console.error('Error sending refund approval email:', emailError);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Remboursement approuvé et traité avec succès',
+      order: order.toJSON(),
+      refundId
+    });
+  } catch (error) {
+    console.error('Error approving refund:', error);
+    res.status(500).json({ success: false, error: 'Erreur lors de l\'approbation du remboursement' });
+  }
+});
+
+// @route   POST /api/admin/orders/:id/reject-refund
+// @desc    Reject a customer refund request — sets order back to delivered
+// @access  Admin
+router.post('/orders/:id/reject-refund', validateId, auditLog('REJECT_REFUND', 'order', req => req.params.id, (req) => ({ reason: req.body.reason })), [
+  body('reason').trim().isLength({ min: 5, max: 500 }).withMessage('La raison du rejet est requise (5-500 caractères)')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, error: 'Données invalides', details: errors.array() });
+    }
+
+    const order = await Order.findByPk(req.params.id);
+    if (!order) {
+      return res.status(404).json({ success: false, error: 'Commande non trouvée' });
+    }
+
+    if (order.status !== 'refund_requested') {
+      return res.status(400).json({ success: false, error: 'Cette commande n\'a pas de demande de remboursement en attente' });
+    }
+
+    const oldStatus = order.status;
+    await order.update({
+      status: 'delivered',
+      refundRejectionReason: req.body.reason,
+      internalNotes: `${order.internalNotes || ''}\n[Remboursement rejeté] ${new Date().toISOString()} - ${req.body.reason}`.trim()
+    });
+
+    // Log status change
+    const OrderStatusLog = require('../models/OrderStatusLog');
+    await OrderStatusLog.create({
+      orderId: order.id,
+      previousStatus: oldStatus,
+      newStatus: 'delivered',
+      changedBy: req.user.id,
+      changedByRole: 'admin',
+      reason: `Demande de remboursement rejetée: ${req.body.reason}`,
+      metadata: { rejectionReason: req.body.reason }
+    });
+
+    // Notify customer of rejection
+    const customer = await User.findByPk(order.userId);
+    if (customer) {
+      try {
+        const emailService = require('../services/emailService');
+        await emailService.sendOrderStatusUpdateEmail(order, customer, oldStatus, 'delivered');
+      } catch (emailError) {
+        console.error('Error sending refund rejection email:', emailError);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Demande de remboursement rejetée',
+      order: order.toJSON()
+    });
+  } catch (error) {
+    console.error('Error rejecting refund:', error);
+    res.status(500).json({ success: false, error: 'Erreur lors du rejet du remboursement' });
+  }
+});
+
 module.exports = router;

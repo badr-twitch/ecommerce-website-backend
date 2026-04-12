@@ -70,7 +70,7 @@ router.get('/', firebaseAuth, async (req, res, next) => {
 }, [
   query('page').optional().isInt({ min: 1 }),
   query('limit').optional().isInt({ min: 1, max: 50 }),
-  query('status').optional().isIn(['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded'])
+  query('status').optional().isIn(['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refund_requested', 'refunded'])
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -562,7 +562,7 @@ router.post('/', writeLimiter, firebaseAuth, [
 // @desc    Update order status (admin only)
 // @access  Private (Admin)
 router.put('/:id/status', validateId, firebaseAuth, adminAuth, [
-  body('status').isIn(['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded']).withMessage('Statut invalide'),
+  body('status').isIn(['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refund_requested', 'refunded']).withMessage('Statut invalide'),
   body('trackingNumber').optional().trim(),
   body('internalNotes').optional().trim()
 ], async (req, res) => {
@@ -685,9 +685,25 @@ router.post('/:id/cancel', validateId, firebaseAuth, async (req, res) => {
     }
 
     const oldStatus = order.status;
+
+    // Auto-refund via Stripe if payment was captured
+    let refundId = null;
+    if (order.paymentTransactionId && order.paymentStatus === 'paid') {
+      try {
+        const refund = await paymentProcessor.refundPayment(order.paymentTransactionId);
+        refundId = refund.id;
+      } catch (refundError) {
+        console.error('❌ Stripe refund failed on cancel:', refundError);
+        return res.status(500).json({
+          error: 'Le remboursement a échoué. Veuillez réessayer ou contacter le support.'
+        });
+      }
+    }
+
     await order.update({
       status: 'cancelled',
-      cancelledAt: new Date()
+      cancelledAt: new Date(),
+      ...(refundId && { paymentStatus: 'refunded' })
     });
 
     // Restore product stock
@@ -731,8 +747,11 @@ router.post('/:id/cancel', validateId, firebaseAuth, async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Commande annulée avec succès',
-      order: order.toJSON()
+      message: refundId
+        ? 'Commande annulée et remboursement effectué'
+        : 'Commande annulée avec succès',
+      order: order.toJSON(),
+      ...(refundId && { refundId })
     });
 
   } catch (error) {
@@ -744,10 +763,26 @@ router.post('/:id/cancel', validateId, firebaseAuth, async (req, res) => {
 });
 
 // @route   POST /api/orders/:id/refund
-// @desc    Request refund for a delivered order
+// @desc    Request refund for a delivered order (admin reviews before processing)
 // @access  Private
 router.post('/:id/refund', validateId, firebaseAuth, [
-  body('reason').notEmpty().withMessage('Raison du remboursement requise')
+  body('reason')
+    .isIn(['defective', 'wrong_item', 'damaged_in_shipping', 'not_as_described', 'missing_parts'])
+    .withMessage('Catégorie de remboursement invalide'),
+  body('description')
+    .isString()
+    .isLength({ min: 20 })
+    .withMessage('Description détaillée requise (minimum 20 caractères)'),
+  body('proofImages')
+    .isArray({ min: 1 })
+    .withMessage('Au moins une photo de preuve est requise'),
+  body('proofImages.*')
+    .isURL()
+    .withMessage('Les URLs des images doivent être valides'),
+  body('affectedItems')
+    .optional()
+    .isArray()
+    .withMessage('Les articles affectés doivent être un tableau')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -760,7 +795,7 @@ router.post('/:id/refund', validateId, firebaseAuth, [
     }
 
     const { id } = req.params;
-    const { reason } = req.body;
+    const { reason, description, proofImages, affectedItems } = req.body;
 
     // Find order and verify ownership
     const whereClause = { id };
@@ -777,19 +812,37 @@ router.post('/:id/refund', validateId, firebaseAuth, [
       });
     }
 
-    // Only allow refund on delivered or shipped orders
-    if (!['delivered', 'shipped'].includes(order.status)) {
+    // Only allow refund on delivered orders
+    if (order.status !== 'delivered') {
       return res.status(400).json({
         success: false,
-        error: 'Seules les commandes livrées ou expédiées peuvent être remboursées'
+        error: 'Seules les commandes livrées peuvent faire l\'objet d\'une demande de remboursement'
       });
     }
 
-    // Already refunded
+    // 30-day refund window
+    if (order.deliveredAt) {
+      const daysSinceDelivery = (Date.now() - new Date(order.deliveredAt).getTime()) / (1000 * 60 * 60 * 24);
+      if (daysSinceDelivery > 30) {
+        return res.status(400).json({
+          success: false,
+          error: 'Le délai de remboursement de 30 jours est dépassé'
+        });
+      }
+    }
+
+    // Already refunded or request pending
     if (order.paymentStatus === 'refunded') {
       return res.status(400).json({
         success: false,
         error: 'Cette commande a déjà été remboursée'
+      });
+    }
+
+    if (order.status === 'refund_requested') {
+      return res.status(400).json({
+        success: false,
+        error: 'Une demande de remboursement est déjà en cours pour cette commande'
       });
     }
 
@@ -801,67 +854,33 @@ router.post('/:id/refund', validateId, firebaseAuth, [
       });
     }
 
-    // Process refund via Stripe
-    const refund = await paymentProcessor.refundPayment(order.paymentTransactionId);
-
     const oldStatus = order.status;
     await order.update({
-      status: 'refunded',
-      paymentStatus: 'refunded',
-      internalNotes: `${order.internalNotes || ''}\n[Remboursement] ${new Date().toISOString()} - Raison: ${reason}`.trim()
+      status: 'refund_requested',
+      refundRequestedAt: new Date(),
+      refundReason: reason,
+      refundDescription: description,
+      refundProofImages: proofImages,
+      refundAffectedItems: affectedItems || null,
+      internalNotes: `${order.internalNotes || ''}\n[Demande de remboursement] ${new Date().toISOString()} - Catégorie: ${reason}`.trim()
     });
 
     // Log status change
-    await logStatusChange(order.id, oldStatus, 'refunded', user?.id, 'customer', reason, { refundId: refund.id });
+    await logStatusChange(order.id, oldStatus, 'refund_requested', user?.id, 'customer', description);
 
-    // Restore stock
-    const orderItems = await OrderItem.findAll({ where: { orderId: order.id } });
-    for (const item of orderItems) {
-      await Product.increment('stockQuantity', {
-        by: item.quantity,
-        where: { id: item.productId }
-      });
-
-      // Check if stock was restored from 0
-      if (notificationService) {
-        const updatedProduct = await Product.findByPk(item.productId);
-        if (updatedProduct && updatedProduct.stockQuantity > 0 && updatedProduct.stockQuantity <= item.quantity) {
-          await safeNotify(notificationService.notifyStockRestored, item.productId);
-        }
-      }
-    }
-
-    // Trigger notifications
+    // Notify admin of refund request
     if (notificationService) {
-      await safeNotify(notificationService.notifyOrderStatusChange, order.id, oldStatus, 'refunded');
-    }
-
-    // Send refund email
-    try {
-      if (user) {
-        await emailService.sendOrderStatusUpdateEmail(order, user, oldStatus, 'refunded');
-      }
-    } catch (emailError) {
-      console.error('Error sending refund email:', emailError);
+      await safeNotify(notificationService.notifyOrderStatusChange, order.id, oldStatus, 'refund_requested');
     }
 
     res.json({
       success: true,
-      message: 'Remboursement effectué avec succès',
-      order: order.toJSON(),
-      refundId: refund.id
+      message: 'Demande de remboursement envoyée. Elle sera examinée par notre équipe sous 48h.',
+      order: order.toJSON()
     });
 
   } catch (error) {
-    console.error('Error processing refund:', error);
-
-    // Handle specific Stripe errors
-    if (error.type === 'StripeInvalidRequestError') {
-      return res.status(400).json({
-        success: false,
-        error: 'Erreur Stripe: ' + error.message
-      });
-    }
+    console.error('Error processing refund request:', error);
 
     res.status(500).json({
       success: false,

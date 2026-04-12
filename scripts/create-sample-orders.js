@@ -43,37 +43,37 @@ const STREET_NAMES = [
   'Rue de la République', 'Place du Capitole', 'Rue d\'Alsace-Lorraine', 'Avenue des États-Unis', 'Rue de la Pomme'
 ];
 
-/** Fisher–Yates shuffle (in place). */
-function shuffleInPlace(arr) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
+/** Local calendar date as YYYYMMDD (matches “today” where the script runs). */
+function formatLocalDateYYYYMMDD(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}${m}${day}`;
 }
 
 /**
- * Random Date within one local calendar day among the last 7 days.
- * dayIndex 0 = oldest day (today minus 6 days, 00:00–23:59:59),
- * dayIndex 6 = today from 00:00:00 up to `now`.
+ * Random timestamp on the **local** calendar day of `now`, between 00:00:00.000
+ * and `now` (never in the future). Run tomorrow → all orders use tomorrow’s date.
  */
-function randomDateInLastSevenCalendarDays(now, dayIndex) {
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
-
-  const dayStart = new Date(todayStart);
-  dayStart.setDate(dayStart.getDate() - (6 - dayIndex));
-
-  const end = dayIndex === 6 ? new Date(now) : new Date(dayStart.getTime() + 24 * 60 * 60 * 1000 - 1);
+function randomDateOnRunDay(now = new Date()) {
+  const dayStart = new Date(now);
+  dayStart.setHours(0, 0, 0, 0);
   const t0 = dayStart.getTime();
-  const t1 = end.getTime();
+  const t1 = now.getTime();
   if (t1 <= t0) return new Date(now);
   return new Date(t0 + Math.random() * (t1 - t0));
 }
 
 const createSampleOrders = async () => {
   try {
-    console.log('🔄 Starting to create 100 realistic sample orders for the last 7 days...');
+    const runAt = new Date();
+    const runDayLabel = runAt.toLocaleDateString(undefined, {
+      weekday: 'short',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+    console.log(`🔄 Creating 100 sample orders for today’s date (${runDayLabel}, local time)...`);
 
     // Get existing users (we need at least one user)
     const users = await User.findAll({ limit: 20 });
@@ -94,17 +94,9 @@ const createSampleOrders = async () => {
 
     console.log(`✅ Found ${users.length} users and ${products.length} products`);
 
-    // Generate 100 orders spread across the last 7 calendar days (varied date/time each)
+    // 100 orders, all on the local calendar day when this script runs
     const orders = [];
     const now = new Date();
-
-    // ~14–15 orders per day (100 total), shuffled so sequence is not day-blocked
-    const daySlots = [];
-    for (let d = 0; d < 7; d++) {
-      const count = d < 2 ? 15 : 14; // 2*15 + 5*14 = 100
-      for (let k = 0; k < count; k++) daySlots.push(d);
-    }
-    shuffleInPlace(daySlots);
 
     // Order status distribution for realistic patterns
     const statusDistribution = {
@@ -125,11 +117,10 @@ const createSampleOrders = async () => {
     const shippingMethods = ['Standard', 'Express', 'Colissimo', 'Chronopost'];
     const shippingMethodWeights = [0.50, 0.25, 0.20, 0.05];
 
-    console.log('📦 Creating 100 realistic orders (last 7 calendar days, random time each)...');
+    console.log('📦 Creating 100 orders (random times from midnight through now, same local day)...');
 
     for (let i = 1; i <= 100; i++) {
-      const dayIndex = daySlots[i - 1];
-      const orderDate = randomDateInLastSevenCalendarDays(now, dayIndex);
+      const orderDate = randomDateOnRunDay(now);
 
       // Select random status based on distribution
       const statusRandom = Math.random();
@@ -182,8 +173,8 @@ const createSampleOrders = async () => {
       const discountAmount = Math.random() < 0.15 ? Math.round(subtotal * 0.10 * 100) / 100 : 0; // 15% chance of 10% discount
       const totalAmount = subtotal + taxAmount + shippingAmount - discountAmount;
 
-      // Generate order number with date
-      const orderDateStr = orderDate.toISOString().slice(0, 10).replace(/-/g, '');
+      // Order number uses local run day so it stays consistent for all 100 orders
+      const orderDateStr = formatLocalDateYYYYMMDD(now);
       const orderNumber = `ORD-${orderDateStr}-${String(i).padStart(3, '0')}`;
 
       // Set appropriate timestamps based on status
@@ -309,7 +300,7 @@ const createSampleOrders = async () => {
     }
 
     console.log('🎉 Sample orders created successfully!');
-    console.log(`📊 Created ${orders.length} realistic orders spread across the last 7 calendar days`);
+    console.log(`📊 Created ${orders.length} orders for ${formatLocalDateYYYYMMDD(now)} (local date)`);
     console.log('📈 Orders distributed across different statuses and payment methods');
     console.log('🔍 You can now test the bulk operations in the admin dashboard');
 

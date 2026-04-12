@@ -20,6 +20,7 @@ const Order = sequelize.define('Order', {
       'shipped',
       'delivered',
       'cancelled',
+      'refund_requested',
       'refunded'
     ),
     defaultValue: 'pending',
@@ -179,6 +180,33 @@ const Order = sequelize.define('Order', {
   },
   cancelledAt: {
     type: DataTypes.DATE,
+    allowNull: true
+  },
+  // Refund request fields
+  refundRequestedAt: {
+    type: DataTypes.DATE,
+    allowNull: true
+  },
+  refundReason: {
+    type: DataTypes.ENUM('defective', 'wrong_item', 'damaged_in_shipping', 'not_as_described', 'missing_parts'),
+    allowNull: true
+  },
+  refundDescription: {
+    type: DataTypes.TEXT,
+    allowNull: true
+  },
+  refundProofImages: {
+    type: DataTypes.JSON,
+    allowNull: true,
+    defaultValue: null
+  },
+  refundAffectedItems: {
+    type: DataTypes.JSON,
+    allowNull: true,
+    defaultValue: null
+  },
+  refundRejectionReason: {
+    type: DataTypes.TEXT,
     allowNull: true
   },
   userId: {
