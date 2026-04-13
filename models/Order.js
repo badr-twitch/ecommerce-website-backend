@@ -105,7 +105,7 @@ const Order = sequelize.define('Order', {
   billingCountry: {
     type: DataTypes.STRING,
     allowNull: false,
-    defaultValue: 'France'
+    defaultValue: 'Maroc'
   },
   // Shipping address
   shippingAddress: {
@@ -123,7 +123,7 @@ const Order = sequelize.define('Order', {
   shippingCountry: {
     type: DataTypes.STRING,
     allowNull: false,
-    defaultValue: 'France'
+    defaultValue: 'Maroc'
   },
   // Payment information
   paymentMethod: {

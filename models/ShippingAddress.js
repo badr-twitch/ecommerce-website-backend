@@ -43,7 +43,7 @@ const ShippingAddress = sequelize.define('ShippingAddress', {
   country: {
     type: DataTypes.STRING,
     allowNull: false,
-    defaultValue: 'France'
+    defaultValue: 'Maroc'
   },
   phone: {
     type: DataTypes.STRING,

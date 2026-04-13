@@ -5,8 +5,41 @@ const User = require('../models/User');
 const firebaseAuth = require('../middleware/firebaseAuth');
 const { writeLimiter } = require('../middleware/rateLimiter');
 const { validateId } = require('../middleware/validateInput');
+const {
+  CANONICAL_COUNTRY,
+  isMoroccanCountry,
+  normalizeMoroccanPhone,
+} = require('../utils/morocco');
 
 const router = express.Router();
+
+// Morocco-only delivery: country must be Moroccan (any accepted alias) and
+// the phone must be a valid Moroccan number. Shared between POST and PUT.
+const addressValidators = [
+  body('name').notEmpty().withMessage('Nom de l\'adresse requis'),
+  body('firstName').notEmpty().withMessage('Prénom requis'),
+  body('lastName').notEmpty().withMessage('Nom de famille requis'),
+  body('address').notEmpty().withMessage('Adresse requise'),
+  body('city').notEmpty().withMessage('Ville requise'),
+  body('postalCode').notEmpty().withMessage('Code postal requis'),
+  body('country')
+    .optional({ checkFalsy: true })
+    .custom((value) => {
+      if (!isMoroccanCountry(value)) {
+        throw new Error('Livraison disponible uniquement au Maroc');
+      }
+      return true;
+    }),
+  body('phone')
+    .notEmpty().withMessage('Téléphone requis')
+    .bail()
+    .custom((value) => {
+      if (!normalizeMoroccanPhone(value).valid) {
+        throw new Error('Numéro de téléphone marocain invalide (ex. 06 12 34 56 78 ou +212 6 12 34 56 78)');
+      }
+      return true;
+    }),
+];
 
 // Apply rate limiting to all shipping address routes
 router.use(writeLimiter);
@@ -49,16 +82,7 @@ router.get('/', firebaseAuth, async (req, res) => {
 // @route   POST /api/shipping-addresses
 // @desc    Add new shipping address
 // @access  Private
-router.post('/', [
-  firebaseAuth,
-  body('name').notEmpty().withMessage('Nom de l\'adresse requis'),
-  body('firstName').notEmpty().withMessage('Prénom requis'),
-  body('lastName').notEmpty().withMessage('Nom de famille requis'),
-  body('address').notEmpty().withMessage('Adresse requise'),
-  body('city').notEmpty().withMessage('Ville requise'),
-  body('postalCode').notEmpty().withMessage('Code postal requis'),
-  body('phone').notEmpty().withMessage('Téléphone requis')
-], async (req, res) => {
+router.post('/', [firebaseAuth, ...addressValidators], async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -80,7 +104,8 @@ router.post('/', [
       });
     }
 
-    const { name, firstName, lastName, address, city, postalCode, country, phone } = req.body;
+    const { name, firstName, lastName, address, city, postalCode, phone } = req.body;
+    const normalizedPhone = normalizeMoroccanPhone(phone).normalized;
 
     // If this is the first address, make it default
     const existingAddresses = await ShippingAddress.count({
@@ -95,8 +120,8 @@ router.post('/', [
       address,
       city,
       postalCode,
-      country: country || 'France',
-      phone,
+      country: CANONICAL_COUNTRY,
+      phone: normalizedPhone,
       isDefault: existingAddresses === 0
     });
 
@@ -118,16 +143,7 @@ router.post('/', [
 // @route   PUT /api/shipping-addresses/:id
 // @desc    Update shipping address
 // @access  Private
-router.put('/:id', validateId, [
-  firebaseAuth,
-  body('name').notEmpty().withMessage('Nom de l\'adresse requis'),
-  body('firstName').notEmpty().withMessage('Prénom requis'),
-  body('lastName').notEmpty().withMessage('Nom de famille requis'),
-  body('address').notEmpty().withMessage('Adresse requise'),
-  body('city').notEmpty().withMessage('Ville requise'),
-  body('postalCode').notEmpty().withMessage('Code postal requis'),
-  body('phone').notEmpty().withMessage('Téléphone requis')
-], async (req, res) => {
+router.put('/:id', validateId, [firebaseAuth, ...addressValidators], async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -160,7 +176,8 @@ router.put('/:id', validateId, [
       });
     }
 
-    const { name, firstName, lastName, address, city, postalCode, country, phone } = req.body;
+    const { name, firstName, lastName, address, city, postalCode, phone } = req.body;
+    const normalizedPhone = normalizeMoroccanPhone(phone).normalized;
 
     await shippingAddress.update({
       name,
@@ -169,8 +186,8 @@ router.put('/:id', validateId, [
       address,
       city,
       postalCode,
-      country: country || 'France',
-      phone
+      country: CANONICAL_COUNTRY,
+      phone: normalizedPhone
     });
 
     res.json({

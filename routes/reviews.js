@@ -16,6 +16,20 @@ const { body } = require('express-validator');
 // Import services
 const TrustpilotService = require('../services/trustpilotService');
 const trustpilotService = new TrustpilotService();
+const s3Service = require('../services/s3Service');
+const logger = require('../services/logger');
+
+// Fire-and-forget S3 cleanup for review media. Never blocks the response and never throws.
+function cleanupReviewMedia(reviewId, urls, context) {
+  if (!Array.isArray(urls) || urls.length === 0) return;
+  s3Service.deleteObjectsByUrls(urls)
+    .then(({ attempted, deleted }) => {
+      logger.info('Review media cleanup', { reviewId, context, attempted, deleted });
+    })
+    .catch((err) => {
+      logger.warn('Review media cleanup failed', { reviewId, context, error: err.message });
+    });
+}
 
 // ==================== PUBLIC REVIEWS ====================
 
@@ -179,9 +193,55 @@ router.get('/product/:productId/summary', validateParamId('productId'), publicLi
 
 // ==================== AUTHENTICATED USER REVIEWS ====================
 
+// @route   GET /api/reviews/product/:productId/eligibility
+// @desc    Check whether the current user is allowed to submit a review
+// @access  Authenticated users
+router.get('/product/:productId/eligibility', publicLimiter, validateParamId('productId'), firebaseAuth, async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Authentification requise' });
+    }
+    const userId = req.user.id;
+    const { productId } = req.params;
+
+    const [existingReview, hasPurchased] = await Promise.all([
+      Review.findOne({ where: { productId, userId }, attributes: ['id', 'status'] }),
+      OrderItem.findOne({
+        include: [{
+          model: Order,
+          as: 'order',
+          where: { userId, status: { [Op.in]: ['delivered', 'shipped'] } },
+          attributes: []
+        }],
+        where: { productId },
+        attributes: ['id']
+      })
+    ]);
+
+    const canReview = !!hasPurchased && !existingReview;
+    let reason = null;
+    if (existingReview) reason = 'ALREADY_REVIEWED';
+    else if (!hasPurchased) reason = 'PURCHASE_REQUIRED';
+
+    res.json({
+      success: true,
+      data: {
+        canReview,
+        hasPurchased: !!hasPurchased,
+        hasReviewed: !!existingReview,
+        existingReviewId: existingReview?.id || null,
+        reason
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error checking review eligibility:', error);
+    res.status(500).json({ success: false, error: 'Erreur lors de la vérification d\'éligibilité' });
+  }
+});
+
 // @route   POST /api/reviews
 // @desc    Submit a new review
-// @access  Authenticated users
+// @access  Authenticated users (purchase gate enforced)
 router.post('/', writeLimiter, firebaseAuth, [
   body('productId').isUUID().withMessage('Identifiant produit invalide'),
   body('rating').isInt({ min: 1, max: 5 }).withMessage('Note doit être entre 1 et 5'),
@@ -226,25 +286,33 @@ router.post('/', writeLimiter, firebaseAuth, [
         error: 'Vous avez déjà laissé un avis pour ce produit'
       });
     }
-    
-    // Check if user has purchased the product (for verified purchase badge)
+
+    // Purchase gate: only buyers (with a delivered/shipped order) may post a review
     const hasPurchased = await OrderItem.findOne({
-             include: [
-         {
-           model: Order,
-           as: 'order',
-           where: {
-             userId: userId,
-             status: { [Op.in]: ['delivered', 'shipped'] }
-           },
-           attributes: []
-         }
-       ],
-       where: {
-         productId: productId
-       }
+      include: [
+        {
+          model: Order,
+          as: 'order',
+          where: {
+            userId: userId,
+            status: { [Op.in]: ['delivered', 'shipped'] }
+          },
+          attributes: []
+        }
+      ],
+      where: {
+        productId: productId
+      }
     });
-    
+
+    if (!hasPurchased) {
+      return res.status(403).json({
+        success: false,
+        code: 'PURCHASE_REQUIRED',
+        error: 'Seuls les clients ayant acheté ce produit peuvent laisser un avis. Une fois votre commande livrée, vous pourrez partager votre expérience.'
+      });
+    }
+
     // Create the review
     const review = await Review.create({
       productId: productId,
@@ -254,7 +322,7 @@ router.post('/', writeLimiter, firebaseAuth, [
       rating: parseInt(rating),
       mediaUrls: mediaUrls || [],
       tags: tags || [],
-      verifiedPurchase: !!hasPurchased,
+      verifiedPurchase: true, // Enforced by purchase gate above
       status: 'pending' // Requires admin approval
     });
     
@@ -333,6 +401,9 @@ router.put('/:reviewId', validateParamId('reviewId'), writeLimiter, firebaseAuth
       });
     }
     
+    // Diff old vs new media to clean up any removed S3 objects
+    const previousMedia = Array.isArray(review.mediaUrls) ? [...review.mediaUrls] : [];
+
     // Update the review
     await review.update({
       title: title?.trim() || review.title,
@@ -342,6 +413,11 @@ router.put('/:reviewId', validateParamId('reviewId'), writeLimiter, firebaseAuth
       tags: tags || review.tags,
       status: 'pending' // Reset to pending for re-moderation
     });
+
+    if (Array.isArray(mediaUrls)) {
+      const removed = previousMedia.filter((url) => !mediaUrls.includes(url));
+      cleanupReviewMedia(reviewId, removed, 'user-update');
+    }
     
     // If review was synced to Trustpilot, update it there too
     if (review.trustpilotId && trustpilotService.isConfigured()) {
@@ -417,9 +493,15 @@ router.delete('/:reviewId', validateParamId('reviewId'), writeLimiter, firebaseA
       }
     }
     
+    // Capture media URLs before destroy so we can clean them up from S3 afterwards
+    const mediaUrlsToCleanup = Array.isArray(review.mediaUrls) ? [...review.mediaUrls] : [];
+
     // Delete the review
     await review.destroy();
-    
+
+    // Best-effort S3 cleanup (non-blocking)
+    cleanupReviewMedia(reviewId, mediaUrlsToCleanup, 'user-delete');
+
     res.json({
       success: true,
       message: 'Avis supprimé avec succès'
@@ -672,6 +754,10 @@ router.put('/admin/:reviewId/status', validateParamId('reviewId'), firebaseAuth,
       });
     }
     
+    // Capture media before update so we can clean up if the admin rejects
+    const previousMedia = Array.isArray(review.mediaUrls) ? [...review.mediaUrls] : [];
+    const previousStatus = review.status;
+
     // Update review status
     await review.update({
       status,
@@ -679,7 +765,12 @@ router.put('/admin/:reviewId/status', validateParamId('reviewId'), firebaseAuth,
       moderatedBy: adminId,
       moderatedAt: new Date()
     });
-    
+
+    // If admin rejected the review, drop its S3 media (best-effort, non-blocking)
+    if (status === 'rejected' && previousStatus !== 'rejected') {
+      cleanupReviewMedia(reviewId, previousMedia, 'admin-reject');
+    }
+
     // If approved and Trustpilot is configured, sync to Trustpilot
     if (status === 'approved' && trustpilotService.isConfigured()) {
       try {

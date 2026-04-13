@@ -12,7 +12,7 @@ dotenv.config();
 const logger = require('./services/logger');
 
 // Validate required environment variables
-const requiredEnvVars = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'JWT_SECRET', 'FIREBASE_SERVICE_ACCOUNT'];
+const requiredEnvVars = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'JWT_SECRET', 'FIREBASE_SERVICE_ACCOUNT', 'AWS_REGION', 'AWS_S3_BUCKET', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'];
 const missingVars = requiredEnvVars.filter(v => !process.env[v]);
 if (missingVars.length > 0) {
   logger.error('Missing required environment variables', { vars: missingVars });
@@ -54,8 +54,7 @@ if (!admin.apps.length) {
     
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
-      databaseURL: process.env.FIREBASE_DATABASE_URL,
-      storageBucket: process.env.FIREBASE_STORAGE_BUCKET
+      databaseURL: process.env.FIREBASE_DATABASE_URL
     });
     logger.info('Firebase Admin SDK initialized');
 
@@ -257,6 +256,9 @@ app.use('/api/reviews', reviewRoutes);
 app.use('/api/recommendations', recommendationRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/membership', membershipRoutes);
+app.use('/api/uploads', require('./routes/uploads'));
+app.use('/api/media', require('./routes/media'));
+app.use('/api/assistant', require('./routes/assistant'));
 
 // WebSocket authentication middleware
 io.use(async (socket, next) => {

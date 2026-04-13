@@ -6,6 +6,7 @@ const User = require('../models/User');
 const VerificationCode = require('../models/VerificationCode');
 const emailService = require('../services/emailService');
 const smsService = require('../services/smsService');
+const { deleteImageByURL } = require('../services/storageCleanupService');
 const { Op } = require('sequelize');
 const crypto = require('crypto');
 
@@ -240,13 +241,13 @@ router.get('/me', firebaseAuth, async (req, res) => {
 // @access  Private
 router.put('/profile', firebaseAuth, [
   body('displayName').optional().trim(),
-  body('photoURL').optional().trim().isURL().withMessage('URL de photo invalide'),
+  body('photoURL').optional({ checkFalsy: true }).trim().isURL({ require_tld: false }).withMessage('URL de photo invalide'),
   body('firstName').optional().trim(),
   body('lastName').optional().trim(),
   body('phone').optional().trim(),
   body('clientType').optional().isIn(['particulier', 'professionnel']).withMessage('Type de client invalide'),
   body('companyName').optional().trim(),
-  body('siret').optional().trim().isLength({ min: 14, max: 14 }).withMessage('Le SIRET doit contenir 14 chiffres'),
+  body('siret').optional({ checkFalsy: true }).trim().isLength({ min: 14, max: 14 }).withMessage('Le SIRET doit contenir 14 chiffres'),
   body('vatNumber').optional().trim(),
   body('billingAddress').optional().trim(),
   body('billingCity').optional().trim(),
@@ -312,8 +313,20 @@ router.put('/profile', firebaseAuth, [
       }
     }
 
+    // If photoURL is being replaced or cleared, remember the old one so we
+    // can purge it from S3 after the DB write succeeds.
+    const previousPhotoURL =
+      Object.prototype.hasOwnProperty.call(req.body, 'photoURL') &&
+      user.photoURL && user.photoURL !== updateData.photoURL
+        ? user.photoURL
+        : null;
+
     // Update user in database
     await user.update(updateData);
+
+    if (previousPhotoURL) {
+      deleteImageByURL(previousPhotoURL).catch(() => {});
+    }
 
     res.json({
       success: true,

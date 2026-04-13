@@ -11,6 +11,12 @@ const paymentProcessor = require('../services/paymentProcessor');
 const emailService = require('../services/emailService');
 const reorderService = require('../services/reorderService');
 const loyaltyService = require('../services/loyaltyService');
+const { isValidS3Reference } = require('../utils/validateS3Url');
+const {
+  CANONICAL_COUNTRY,
+  isMoroccanCountry,
+  normalizeMoroccanPhone,
+} = require('../utils/morocco');
 
 const router = express.Router();
 const { publicLimiter, writeLimiter } = require('../middleware/rateLimiter');
@@ -338,15 +344,38 @@ router.post('/', writeLimiter, firebaseAuth, [
   body('customerFirstName').trim().notEmpty().withMessage('Prénom requis'),
   body('customerLastName').trim().notEmpty().withMessage('Nom requis'),
   body('customerEmail').isEmail().withMessage('Email invalide'),
-  body('customerPhone').optional().trim(),
+  body('customerPhone')
+    .trim()
+    .notEmpty().withMessage('Téléphone requis')
+    .bail()
+    .custom((value) => {
+      if (!normalizeMoroccanPhone(value).valid) {
+        throw new Error('Numéro de téléphone marocain invalide (ex. 06 12 34 56 78 ou +212 6 12 34 56 78)');
+      }
+      return true;
+    }),
   body('billingAddress').trim().notEmpty().withMessage('Adresse de facturation requise'),
   body('billingCity').trim().notEmpty().withMessage('Ville de facturation requise'),
   body('billingPostalCode').trim().notEmpty().withMessage('Code postal de facturation requis'),
-  body('billingCountry').trim().notEmpty().withMessage('Pays de facturation requis'),
+  body('billingCountry')
+    .optional({ checkFalsy: true })
+    .custom((value) => {
+      if (!isMoroccanCountry(value)) {
+        throw new Error('Facturation disponible uniquement au Maroc');
+      }
+      return true;
+    }),
   body('shippingAddress').trim().notEmpty().withMessage('Adresse de livraison requise'),
   body('shippingCity').trim().notEmpty().withMessage('Ville de livraison requise'),
   body('shippingPostalCode').trim().notEmpty().withMessage('Code postal de livraison requis'),
-  body('shippingCountry').trim().notEmpty().withMessage('Pays de livraison requis'),
+  body('shippingCountry')
+    .optional({ checkFalsy: true })
+    .custom((value) => {
+      if (!isMoroccanCountry(value)) {
+        throw new Error('Livraison disponible uniquement au Maroc');
+      }
+      return true;
+    }),
   body('paymentMethod').trim().notEmpty().withMessage('Méthode de paiement requise'),
   body('paymentIntentId').trim().notEmpty().withMessage('ID de paiement Stripe requis'),
   body('customerNotes').optional().trim()
@@ -369,15 +398,19 @@ router.post('/', writeLimiter, firebaseAuth, [
       billingAddress,
       billingCity,
       billingPostalCode,
-      billingCountry,
       shippingAddress,
       shippingCity,
       shippingPostalCode,
-      shippingCountry,
       paymentMethod,
       paymentIntentId,
       customerNotes
     } = req.body;
+
+    // Normalise the phone to +212… and pin billing/shipping countries to the
+    // canonical Moroccan value regardless of what the client sent.
+    const normalizedPhone = normalizeMoroccanPhone(customerPhone).normalized;
+    const billingCountry = CANONICAL_COUNTRY;
+    const shippingCountry = CANONICAL_COUNTRY;
 
     // Verify Stripe payment succeeded
     const paymentIntent = await paymentProcessor.retrievePaymentIntent(paymentIntentId);
@@ -462,7 +495,7 @@ router.post('/', writeLimiter, firebaseAuth, [
       customerFirstName,
       customerLastName,
       customerEmail,
-      customerPhone,
+      customerPhone: normalizedPhone,
       billingAddress,
       billingCity,
       billingPostalCode,
@@ -475,9 +508,8 @@ router.post('/', writeLimiter, firebaseAuth, [
       paymentStatus: 'paid',
       paymentTransactionId: paymentIntentId,
       customerNotes,
-      estimatedDeliveryDate: new Date(Date.now() + (
-        (shippingCountry === 'Maroc' || shippingCountry === 'Morocco' || shippingCountry === 'France') ? 5 : 14
-      ) * 24 * 60 * 60 * 1000)
+      // Morocco-only delivery: ~5 days across the kingdom.
+      estimatedDeliveryDate: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)
     });
 
     // Create order items
@@ -597,9 +629,8 @@ router.put('/:id/status', validateId, firebaseAuth, adminAuth, [
         updateData.shippedAt = new Date();
         updateData.trackingNumber = trackingNumber;
         if (!order.estimatedDeliveryDate) {
-          const country = order.shippingCountry;
-          const days = (country === 'Maroc' || country === 'Morocco' || country === 'France') ? 5 : 14;
-          updateData.estimatedDeliveryDate = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+          // Morocco-only delivery: ~5 days across the kingdom.
+          updateData.estimatedDeliveryDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000);
         }
         break;
       case 'delivered':
@@ -765,24 +796,25 @@ router.post('/:id/cancel', validateId, firebaseAuth, async (req, res) => {
 // @route   POST /api/orders/:id/refund
 // @desc    Request refund for a delivered order (admin reviews before processing)
 // @access  Private
-router.post('/:id/refund', validateId, firebaseAuth, [
+router.post('/:id/refund', writeLimiter, validateId, firebaseAuth, [
   body('reason')
     .isIn(['defective', 'wrong_item', 'damaged_in_shipping', 'not_as_described', 'missing_parts'])
     .withMessage('Catégorie de remboursement invalide'),
   body('description')
     .isString()
-    .isLength({ min: 20 })
-    .withMessage('Description détaillée requise (minimum 20 caractères)'),
+    .isLength({ min: 20, max: 2000 })
+    .withMessage('Description requise (entre 20 et 2000 caractères)'),
   body('proofImages')
-    .isArray({ min: 1 })
-    .withMessage('Au moins une photo de preuve est requise'),
+    .isArray({ min: 1, max: 5 })
+    .withMessage('Entre 1 et 5 photos de preuve sont requises'),
   body('proofImages.*')
-    .isURL()
-    .withMessage('Les URLs des images doivent être valides'),
+    .isString()
+    .isLength({ min: 1, max: 512 })
+    .withMessage('Référence d\'image invalide'),
   body('affectedItems')
     .optional()
-    .isArray()
-    .withMessage('Les articles affectés doivent être un tableau')
+    .isArray({ max: 50 })
+    .withMessage('Les articles affectés doivent être un tableau (max 50)')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -851,6 +883,19 @@ router.post('/:id/refund', validateId, firebaseAuth, [
       return res.status(400).json({
         success: false,
         error: 'Aucun paiement Stripe associé à cette commande'
+      });
+    }
+
+    const expectedPrefix = `refund-proofs/${order.id}/`;
+    const expectedBucket = process.env.AWS_S3_BUCKET;
+    const expectedRegion = process.env.AWS_REGION;
+    const allProofsValid = proofImages.every((ref) =>
+      isValidS3Reference(ref, { expectedPrefix, expectedBucket, expectedRegion })
+    );
+    if (!allProofsValid) {
+      return res.status(400).json({
+        success: false,
+        error: 'Référence de preuve invalide : les images doivent être uploadées sur cette commande'
       });
     }
 

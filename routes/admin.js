@@ -14,7 +14,7 @@ const ShippingAddress = require('../models/ShippingAddress');
 const PaymentMethod = require('../models/PaymentMethod');
 const StockHistory = require('../models/StockHistory');
 const inventoryService = require('../services/inventoryService');
-const { deleteProductImages, deleteCategoryImage } = require('../services/storageCleanupService');
+const { deleteProductImages, deleteCategoryImage, deleteImageByURL } = require('../services/storageCleanupService');
 
 // Import models index to ensure associations are loaded
 require('../models/index');
@@ -528,8 +528,20 @@ router.put('/products/:id', validateId, auditLog('UPDATE', 'product', req => req
       });
     }
     
+    // Diff old vs new image refs so we can purge the orphans from S3.
+    const orphans = [];
+    if ('mainImage' in updateData && product.mainImage && product.mainImage !== updateData.mainImage) {
+      orphans.push(product.mainImage);
+    }
+    if ('images' in updateData && Array.isArray(product.images)) {
+      const next = new Set(Array.isArray(updateData.images) ? updateData.images : []);
+      for (const ref of product.images) if (ref && !next.has(ref)) orphans.push(ref);
+    }
+
     await product.update(updateData);
     console.log('✅ Product updated successfully');
+
+    for (const ref of orphans) deleteImageByURL(ref).catch(() => {});
 
     // Get updated product with category
     const updatedProduct = await Product.findByPk(product.id, {
@@ -711,7 +723,16 @@ router.put('/categories/:id', validateId, [
       });
     }
 
+    const orphans = [];
+    for (const field of ['image', 'imageUrl']) {
+      if (field in req.body && category[field] && category[field] !== req.body[field]) {
+        orphans.push(category[field]);
+      }
+    }
+
     await category.update(req.body);
+
+    for (const ref of orphans) deleteImageByURL(ref).catch(() => {});
 
     res.json({
       success: true,

@@ -1,60 +1,39 @@
-const admin = require('firebase-admin');
+const s3Service = require('./s3Service');
+const logger = require('./logger');
 
 /**
- * Extract Firebase Storage path from a download URL.
- * Returns null for non-Firebase URLs.
+ * Normalize a stored media reference to an S3 key.
+ * Accepts either a bare key or a full S3 URL (virtual-hosted or path-style).
  */
-function getPathFromURL(url) {
-  try {
-    if (!url || !url.includes('firebasestorage.googleapis.com')) {
-      return null;
-    }
-    const parsed = new URL(url);
-    const encoded = parsed.pathname.split('/o/')[1]?.split('?')[0];
-    return encoded ? decodeURIComponent(encoded) : null;
-  } catch {
-    return null;
-  }
+function toKey(ref) {
+  if (typeof ref !== 'string' || !ref) return null;
+  if (!ref.includes('://')) return ref;
+  // Backend proxy URL: .../api/media/public/{key}
+  const proxyMatch = ref.match(/\/api\/media\/public\/(.+)$/);
+  if (proxyMatch) return decodeURIComponent(proxyMatch[1]);
+  return s3Service.parseKeyFromUrl(ref);
 }
 
-/**
- * Delete a single image from Firebase Storage by its download URL.
- * Silently ignores non-Firebase URLs and deletion errors.
- */
-async function deleteImageByURL(url) {
-  const path = getPathFromURL(url);
-  if (!path) return;
-
+async function deleteImageByURL(ref) {
+  const key = toKey(ref);
+  if (!key) return;
   try {
-    const bucket = admin.storage().bucket();
-    await bucket.file(path).delete();
+    await s3Service.deleteObject(key);
   } catch (error) {
-    // File may already be deleted or URL may be external — don't block
-    console.warn('Storage cleanup: could not delete', path, error.message);
+    logger.warn('Storage cleanup: delete failed', { key, error: error.message });
   }
 }
 
-/**
- * Delete all Firebase Storage images associated with a product.
- */
 async function deleteProductImages(product) {
-  const urls = [];
-  if (product.mainImage) urls.push(product.mainImage);
-  if (Array.isArray(product.images)) urls.push(...product.images);
-
-  await Promise.allSettled(urls.map(deleteImageByURL));
+  const refs = [];
+  if (product.mainImage) refs.push(product.mainImage);
+  if (Array.isArray(product.images)) refs.push(...product.images);
+  await Promise.allSettled(refs.map(deleteImageByURL));
 }
 
-/**
- * Delete the Firebase Storage image associated with a category.
- */
 async function deleteCategoryImage(category) {
-  if (category.image) {
-    await deleteImageByURL(category.image);
-  }
-  if (category.imageUrl) {
-    await deleteImageByURL(category.imageUrl);
-  }
+  if (category.image) await deleteImageByURL(category.image);
+  if (category.imageUrl) await deleteImageByURL(category.imageUrl);
 }
 
 module.exports = {
