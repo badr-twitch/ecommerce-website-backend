@@ -377,7 +377,6 @@ router.post('/change-password', loginLimiter, firebaseAuth, [
     }
 
     try {
-      const fetch = (await import('node-fetch')).default;
       const verifyResponse = await fetch(
         `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${firebaseApiKey}`,
         {
@@ -398,9 +397,10 @@ router.post('/change-password', loginLimiter, firebaseAuth, [
         });
       }
     } catch (verifyError) {
-      return res.status(401).json({
+      console.error('Firebase password verification failed:', verifyError.message);
+      return res.status(500).json({
         success: false,
-        error: 'Mot de passe actuel incorrect'
+        error: 'Erreur de vérification du mot de passe'
       });
     }
 
