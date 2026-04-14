@@ -1,3 +1,6 @@
+require('dotenv').config();
+process.env.DB_USE_DIRECT = 'true';
+
 const sequelize = require('../config/database');
 const { QueryTypes } = require('sequelize');
 

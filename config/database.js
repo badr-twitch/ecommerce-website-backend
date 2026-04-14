@@ -3,9 +3,10 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-const isProduction = process.env.NODE_ENV === 'production';
+const useSsl = process.env.DB_SSL !== 'false';
+const useDirectHost = process.env.DB_USE_DIRECT === 'true';
 
-const dialectOptions = isProduction
+const dialectOptions = useSsl
   ? {
       ssl: {
         require: true,
@@ -14,12 +15,16 @@ const dialectOptions = isProduction
     }
   : {};
 
+const host = useDirectHost
+  ? (process.env.DB_HOST_DIRECT || process.env.DB_HOST || 'localhost')
+  : (process.env.DB_HOST || 'localhost');
+
 const sequelize = new Sequelize(
   process.env.DB_NAME || 'ecommerce_db',
   process.env.DB_USER || 'postgres',
   process.env.DB_PASSWORD || 'password',
   {
-    host: process.env.DB_HOST || 'localhost',
+    host,
     port: process.env.DB_PORT || 5432,
     dialect: 'postgres',
     logging: false,

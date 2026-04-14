@@ -1,8 +1,9 @@
 const dotenv = require('dotenv');
-const sequelize = require('../config/database');
 
-// Load environment variables
 dotenv.config();
+process.env.DB_USE_DIRECT = 'true';
+
+const sequelize = require('../config/database');
 
 // Import all models
 const User = require('../models/User');
