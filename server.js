@@ -58,10 +58,16 @@ if (!admin.apps.length) {
     });
     logger.info('Firebase Admin SDK initialized');
 
-    // Test Firebase Admin functionality
-    admin.auth().getUserByEmail('test@example.com')
+    // Verify credentials reach Firebase — 'user-not-found' is the expected success path
+    admin.auth().getUserByEmail('healthcheck-nonexistent@example.com')
       .then(() => logger.info('Firebase Admin SDK verified'))
-      .catch(() => logger.warn('Firebase Admin SDK initialized but verification test failed'));
+      .catch((err) => {
+        if (err.code === 'auth/user-not-found') {
+          logger.info('Firebase Admin SDK verified');
+        } else {
+          logger.warn('Firebase Admin SDK verification failed', { code: err.code, message: err.message });
+        }
+      });
   } catch (error) {
     logger.error('Error initializing Firebase Admin', { error: error.message });
   }
