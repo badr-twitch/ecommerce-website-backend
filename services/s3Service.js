@@ -87,6 +87,49 @@ async function deleteObject(key) {
   }
 }
 
+// Production-safe deletion. Gated by S3_DELETE_ENABLED env var.
+// Validates key shape, never throws, returns { success }.
+// When disabled, logs '[S3 CLEANUP SKIPPED] key=...' so flows can be exercised
+// in production before deletion is enabled.
+async function deleteObjectByKey(key) {
+  if (!key || typeof key !== 'string' || !key.trim()) {
+    logger.warn('[S3 CLEANUP] invalid key', { key });
+    return { success: false };
+  }
+
+  const trimmed = key.trim();
+
+  if (trimmed.includes('..') || trimmed.startsWith('/')) {
+    logger.warn('[S3 CLEANUP] unsafe key rejected', { key: trimmed });
+    return { success: false };
+  }
+
+  if (!ALLOWED_CATEGORIES.some((c) => trimmed.startsWith(`${c}/`))) {
+    logger.warn('[S3 CLEANUP] key outside allowed prefixes', { key: trimmed });
+    return { success: false };
+  }
+
+  if (process.env.S3_DELETE_ENABLED !== 'true') {
+    logger.info(`[S3 CLEANUP SKIPPED] key=${trimmed}`);
+    return { success: false };
+  }
+
+  logger.info('[S3 CLEANUP] deletion attempted', { key: trimmed });
+
+  try {
+    await getClient().send(new DeleteObjectCommand({ Bucket: BUCKET, Key: trimmed }));
+    logger.info('[S3 CLEANUP] success', { key: trimmed });
+    return { success: true };
+  } catch (err) {
+    if (err && (err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404)) {
+      logger.info('[S3 CLEANUP] object missing, treating as success', { key: trimmed });
+      return { success: true };
+    }
+    logger.warn('[S3 CLEANUP] failure', { key: trimmed, error: err.message });
+    return { success: false };
+  }
+}
+
 // Best-effort, fire-and-forget deletion of S3 objects referenced by their public URLs.
 // Skips entries that don't resolve to a key in our bucket. Never throws.
 async function deleteObjectsByUrls(urls) {
@@ -122,6 +165,7 @@ module.exports = {
   presignPut,
   presignGet,
   deleteObject,
+  deleteObjectByKey,
   deleteObjectsByUrls,
   parseKeyFromUrl,
   sanitizeFilename,

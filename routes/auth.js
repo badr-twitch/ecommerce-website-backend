@@ -6,7 +6,9 @@ const User = require('../models/User');
 const VerificationCode = require('../models/VerificationCode');
 const emailService = require('../services/emailService');
 const smsService = require('../services/smsService');
-const { deleteImageByURL } = require('../services/storageCleanupService');
+const { deleteImageByURL, toKey } = require('../services/storageCleanupService');
+const s3Service = require('../services/s3Service');
+const logger = require('../services/logger');
 const { Op } = require('sequelize');
 const crypto = require('crypto');
 
@@ -330,7 +332,25 @@ router.put('/profile', firebaseAuth, [
     await user.update(updateData);
 
     if (previousPhotoURL) {
-      deleteImageByURL(previousPhotoURL).catch(() => {});
+      const oldKey = toKey(previousPhotoURL);
+      if (oldKey && oldKey.startsWith('profile-photos/')) {
+        logger.info('[S3 CLEANUP] profile photo change detected', {
+          userId: user.id,
+          oldKey,
+          newKey: updateData.photoURL || '(removed)',
+        });
+        s3Service.deleteObjectByKey(oldKey).catch((err) => {
+          logger.warn('[S3 CLEANUP] deleteObjectByKey unexpected throw', {
+            key: oldKey,
+            error: err.message,
+          });
+        });
+      } else {
+        logger.info('[S3 CLEANUP] skipped non-profile-photo previous value', {
+          userId: user.id,
+          oldValue: previousPhotoURL,
+        });
+      }
     }
 
     res.json({

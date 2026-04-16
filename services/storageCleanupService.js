@@ -37,6 +37,7 @@ async function deleteCategoryImage(category) {
 }
 
 module.exports = {
+  toKey,
   deleteImageByURL,
   deleteProductImages,
   deleteCategoryImage,
