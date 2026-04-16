@@ -24,6 +24,10 @@ function getClient() {
         accessKeyId: process.env.AWS_ACCESS_KEY_ID,
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
       },
+      // SDK v3.729+ defaults to baking x-amz-sdk-checksum-algorithm into presigned URLs.
+      // Browser PUT can't supply the matching CRC32 header → S3 401s with no CORS headers.
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
     });
   }
   return client;

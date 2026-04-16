@@ -241,7 +241,12 @@ router.get('/me', firebaseAuth, async (req, res) => {
 // @access  Private
 router.put('/profile', firebaseAuth, [
   body('displayName').optional().trim(),
-  body('photoURL').optional({ checkFalsy: true }).trim().isURL({ require_tld: false }).withMessage('URL de photo invalide'),
+  body('photoURL').optional({ checkFalsy: true }).isString().trim().custom((value) => {
+    if (!value) return true;
+    if (/^(https?:)/i.test(value)) return true;
+    if (/^profile-photos\/[A-Za-z0-9_-]+\/[A-Za-z0-9._-]+$/.test(value)) return true;
+    throw new Error('URL de photo invalide');
+  }),
   body('firstName').optional().trim(),
   body('lastName').optional().trim(),
   body('phone').optional().trim(),
