@@ -1241,4 +1241,19 @@ router.post('/logout', firebaseAuth, async (req, res) => {
   }
 });
 
+// ============================================================
+// TEMPORARY: One-time admin promotion — REMOVE AFTER USE
+// ============================================================
+router.post('/promote-admin-once', async (req, res) => {
+  const { email, secret } = req.body;
+  if (secret !== process.env.ADMIN_PROMOTE_SECRET) {
+    return res.status(403).json({ error: 'Invalid secret' });
+  }
+  const user = await User.findOne({ where: { email } });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  await user.update({ role: 'admin' });
+  res.json({ success: true, message: `${email} is now admin` });
+});
+// ============================================================
+
 module.exports = { router, setNotificationService };
