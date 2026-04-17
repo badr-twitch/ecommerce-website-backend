@@ -15,6 +15,7 @@ const PaymentMethod = require('../models/PaymentMethod');
 const StockHistory = require('../models/StockHistory');
 const inventoryService = require('../services/inventoryService');
 const { deleteProductImages, deleteCategoryImage, deleteImageByURL } = require('../services/storageCleanupService');
+const logger = require('../services/logger');
 
 // Import models index to ensure associations are loaded
 require('../models/index');
@@ -456,7 +457,13 @@ router.post('/products', auditLog('CREATE', 'product', null, (req) => ({ name: r
     });
 
   } catch (error) {
-    console.error('❌ Create product error:', error);
+    logger.error('Create product error', { error: error.message, stack: error.stack });
+    if (error.name === 'SequelizeValidationError' || error.name === 'SequelizeUniqueConstraintError') {
+      return res.status(400).json({
+        success: false,
+        error: error.errors?.[0]?.message || error.message
+      });
+    }
     res.status(500).json({
       success: false,
       error: 'Erreur lors de la création du produit'
@@ -556,7 +563,13 @@ router.put('/products/:id', validateId, auditLog('UPDATE', 'product', req => req
     });
 
   } catch (error) {
-    console.error('❌ Update product error:', error);
+    logger.error('Update product error', { error: error.message, stack: error.stack });
+    if (error.name === 'SequelizeValidationError' || error.name === 'SequelizeUniqueConstraintError') {
+      return res.status(400).json({
+        success: false,
+        error: error.errors?.[0]?.message || error.message
+      });
+    }
     res.status(500).json({
       success: false,
       error: 'Erreur lors de la mise à jour du produit'
