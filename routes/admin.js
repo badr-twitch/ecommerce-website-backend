@@ -443,6 +443,14 @@ router.post('/products', auditLog('CREATE', 'product', null, (req) => ({ name: r
       data.mainImage = data.imageUrl;
     }
 
+    // Convert empty strings to null for optional numeric/date fields
+    const nullableFields = ['originalPrice', 'salePercentage', 'weight', 'minStockLevel', 'reorderPoint', 'maxStockLevel', 'saleStartDate', 'saleEndDate'];
+    for (const field of nullableFields) {
+      if (data[field] === '' || data[field] === undefined) {
+        data[field] = null;
+      }
+    }
+
     const product = await Product.create(data);
 
     // Get product with category
