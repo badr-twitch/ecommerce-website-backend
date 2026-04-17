@@ -350,7 +350,7 @@ router.get('/dashboard', async (req, res) => {
             count: parseInt(item.dataValues.count)
           }))
         },
-        topProducts: topProducts.map(item => ({
+        topProducts: topProducts.filter(item => item.product).map(item => ({
           id: item.product.id,
           name: item.product.name,
           imageUrl: item.product.mainImage,
@@ -905,7 +905,7 @@ router.get('/orders/:id', validateId, async (req, res) => {
           include: [{ 
             model: Product, 
             as: 'product',
-            attributes: ['id', 'name', 'price', 'imageUrl', 'sku']
+            attributes: ['id', 'name', 'price', 'mainImage', 'sku']
           }] 
         },
         { model: ShippingAddress, as: 'shippingAddress' },
@@ -1094,7 +1094,7 @@ router.post('/orders/:id/refund', validateId, auditLog('REFUND', 'order', req =>
     // Restore stock
     for (const item of order.orderItems || []) {
       if (item.product) {
-        await item.product.increment('stock', { by: item.quantity });
+        await item.product.increment('stockQuantity', { by: item.quantity });
       }
     }
 

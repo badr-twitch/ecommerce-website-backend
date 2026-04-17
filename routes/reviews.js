@@ -694,15 +694,15 @@ router.get('/admin', firebaseAuth, adminAuth, async (req, res) => {
           notHelpfulVotes: review.notHelpfulVotes,
           createdAt: review.createdAt,
           updatedAt: review.updatedAt,
-          user: {
+          user: review.user ? {
             id: review.user.id,
             name: `${review.user.firstName} ${review.user.lastName}`,
             email: review.user.email
-          },
-          product: {
+          } : null,
+          product: review.product ? {
             id: review.product.id,
             name: review.product.name
-          },
+          } : null,
           mediaUrls: review.mediaUrls || [],
           tags: review.tags || []
         })),
@@ -717,7 +717,7 @@ router.get('/admin', firebaseAuth, adminAuth, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Error fetching admin reviews:', error);
+    logger.error('Error fetching admin reviews', { error: error.message, stack: error.stack });
     res.status(500).json({
       success: false,
       error: 'Erreur lors du chargement des avis'
